@@ -33,6 +33,7 @@ export interface ProcessCommentJob {
   // Set when the comment came from an ad: the organic post the ad was made
   // from. Campaigns are bound to that post, so both ids have to be matched.
   originalMediaId?: string;
+  triggeredAt?: number;
   requeueAttempt?: number;
   // Which path enqueued this comment. It is not copied to ProcessedComment or
   // used for reconciliation dedup.
@@ -54,6 +55,8 @@ export interface ProcessPostbackJob {
   // How many delayed re-checks have run, counting this one. Absent on jobs
   // queued before re-checks were counted, where `followRecheck` meant one.
   followRecheckAttempt?: number;
+  conversationId?: string;
+  triggeredAt?: number;
 }
 
 // Scheduled after the link is delivered, to send the appreciation follow-up.
@@ -65,6 +68,8 @@ export interface ProcessFollowUpJob {
   userId: string;
   automationId: string;
   commenterName?: string | null;
+  conversationId?: string;
+  triggeredAt?: number;
 }
 
 // An inbound DM from a user. Campaigns with `dmTriggerEnabled` whose keywords
@@ -75,6 +80,11 @@ export interface ProcessMessageJob {
   messageId: string;
   messageText: string;
   senderId: string;
+  provider?: "ZERNIO";
+  storyReply?: { storyId: string | null };
+  excludeStandalone?: boolean;
+  conversationId?: string;
+  triggeredAt?: number;
 }
 
 export type DmQueueJob =

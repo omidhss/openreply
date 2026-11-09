@@ -64,6 +64,8 @@ export async function duplicateCampaign({
       updatedAt: undefined,
       name: buildDuplicateName(settings.name),
       isActive: false,
+      enabledAt: null,
+      expiresAt: null,
       reportShareSlug: generateReportShareSlug(),
       trackedLinks: {
         // Numbered from the order just read, so the copy's buttons match

@@ -12,11 +12,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import { readCache, writeCache } from "@/lib/client-cache";
+import { campaignStatus, useCampaignTime } from "@/lib/campaigns/client-status";
+import { formatRomeInput } from "@/lib/campaigns/rome-time";
+import type { CampaignTrigger } from "@/app/generated/prisma/enums";
 
 interface Campaign {
   id: string;
   name: string;
   goal: string | null;
+  trigger: CampaignTrigger;
+  expiresAt: string | null;
+  scheduleStartsAt: string | null;
   postId: string | null;
   postUrl: string | null;
   pendingNextReel: boolean;
@@ -66,6 +72,8 @@ interface Campaign {
 export default function CampaignsPage() {
   const { t, label } = useI18n();
   const router = useRouter();
+  const now = useCampaignTime();
+  const [actionError, setActionError] = useState<string | null>(null);
   const [automations, setAutomations] = useState<Campaign[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("all");
@@ -200,17 +208,18 @@ export default function CampaignsPage() {
   }
 
   async function toggleActive(id: string, isActive: boolean) {
+    setActionError(null);
     try {
-      await fetch(`/api/automations?id=${id}`, {
+      const response = await fetch(`/api/automations?id=${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive: !isActive }),
       });
-      setAutomations((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, isActive: !isActive } : a))
-      );
-    } catch (err) {
-      console.error("Failed to toggle:", err);
+      const result = await response.json();
+      if (!result.success) return setActionError(result.error || t("Could not update campaign."));
+      await fetchAutomations();
+    } catch {
+      setActionError(t("Could not update campaign."));
     }
   }
 
@@ -268,8 +277,10 @@ export default function CampaignsPage() {
 
   const query = search.trim().toLowerCase();
   const filtered = automations.filter((a) => {
-    if (statusFilter === "active" && !a.isActive) return false;
-    if (statusFilter === "paused" && a.isActive) return false;
+    const status = campaignStatus(a, now);
+    const enabled = status === "Active" || status === "Scheduled";
+    if (statusFilter === "active" && !enabled) return false;
+    if (statusFilter === "paused" && enabled) return false;
     if (!query) return true;
     return (
       a.name.toLowerCase().includes(query) ||
@@ -313,6 +324,7 @@ export default function CampaignsPage() {
       </div>
 
       {/* Search + status filter */}
+      {actionError && <p role="alert" className="text-sm text-error">{actionError}</p>}
       {automations.length > 0 && (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <input
@@ -367,6 +379,8 @@ export default function CampaignsPage() {
       <div className="space-y-3">
         {filtered.map((auto) => {
           const videoUrl = auto.postId ? videos[auto.postId] : undefined;
+          const status = campaignStatus(auto, now);
+          const enabled = status === "Active" || status === "Scheduled";
           return (
           <div
             key={auto.id}
@@ -425,13 +439,19 @@ export default function CampaignsPage() {
                   </span>
                   <span
                     className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      auto.isActive
+                      enabled
                         ? "bg-success/10 text-success"
                         : "bg-zinc-500/10 text-muted"
                     }`}
                   >
-                    {auto.isActive ? t("Active") : t("Paused")}
+                    {t(status)}
                   </span>
+                  {auto.trigger && auto.trigger !== "COMMENT" && <span className="text-xs text-muted">{auto.trigger === "STORY_REPLY" ? t("Story reply") : t("DM keyword")}</span>}
+                  {enabled && (status === "Scheduled" ? auto.scheduleStartsAt : auto.expiresAt) && (
+                    <span className="text-xs text-muted">
+                      {t(status === "Scheduled" ? "Starts {time}" : "Ends {time}", { time: `${formatRomeInput(new Date((status === "Scheduled" ? auto.scheduleStartsAt : auto.expiresAt)!)).replace("T", " ")} (Europe/Rome)` })}
+                    </span>
+                  )}
                   {auto.pendingNextReel && (
                     <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-warning">
                       {t("Waiting for next reel")}
@@ -520,16 +540,16 @@ export default function CampaignsPage() {
                 )}
                 {/* Toggle */}
                 <button
-                  onClick={() => toggleActive(auto.id, auto.isActive)}
+                  onClick={() => toggleActive(auto.id, enabled)}
                   className={`
                     relative w-11 h-6 rounded-full transition-colors
-                    ${auto.isActive ? "bg-accent" : "bg-zinc-300"}
+                    ${enabled ? "bg-accent" : "bg-zinc-300"}
                   `}
                 >
                   <span
                     className={`
                       absolute top-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm
-                      ${auto.isActive ? "left-6" : "left-1"}
+                      ${enabled ? "left-6" : "left-1"}
                     `}
                   />
                 </button>

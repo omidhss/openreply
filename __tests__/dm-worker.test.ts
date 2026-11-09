@@ -23,6 +23,7 @@ const {
     automation: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
     },
     dmLog: {
       findUnique: vi.fn(),
@@ -222,6 +223,7 @@ function createMockPostbackJob(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPrisma.automation.findUnique.mockResolvedValue({ isActive: true });
   mockPrisma.postbackDelivery.create.mockReset().mockResolvedValue({});
   mockPrisma.postbackDelivery.delete.mockReset().mockResolvedValue({});
 
@@ -328,11 +330,12 @@ describe("DM Worker — Full Pipeline", () => {
     await processor(createMockJob());
 
     expect(mockPrisma.automation.findMany).toHaveBeenCalledWith({
-      where: {
+      where: expect.objectContaining({
         OR: [{ postId: "media_101" }, { matchAnyPost: true }],
         isActive: true,
+        trigger: "COMMENT",
         instagramAccount: { instagramId: "ig_456" },
-      },
+      }),
       include: {
         instagramAccount: true,
         workspace: true,
@@ -1027,7 +1030,7 @@ describe("DM Worker — DM keyword trigger", () => {
     expect(mockPrisma.automation.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          dmTriggerEnabled: true,
+          OR: [{ trigger: "COMMENT", dmTriggerEnabled: true }],
           isActive: true,
         }),
       })

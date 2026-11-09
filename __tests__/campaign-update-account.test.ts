@@ -67,10 +67,9 @@ describe("PATCH /api/automations", () => {
     const response = await PATCH(patchRequest({ instagramAccountId: "account_new" }));
 
     expect(response.status).toBe(200);
-    expect(mockPrisma.instagramAccount.findFirst).toHaveBeenCalledWith({
+    expect(mockPrisma.instagramAccount.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: "account_new", workspaceId: "workspace_123" },
-      select: { id: true },
-    });
+    }));
     expect(mockPrisma.automation.update).toHaveBeenCalledWith({
       where: { id: "automation_123" },
       data: expect.objectContaining({ instagramAccountId: "account_new" }),

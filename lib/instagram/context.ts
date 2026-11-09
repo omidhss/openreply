@@ -9,6 +9,7 @@ export type InstagramContext =
       accountId: string;
       instagramId: string;
       operationId?: string;
+      conversationId?: string;
     };
 
 export type ProviderAccount = {

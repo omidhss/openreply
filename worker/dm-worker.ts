@@ -2,6 +2,7 @@ import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
+import { pauseExpiredCampaigns } from "@/lib/campaigns/schedule";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -28,8 +29,16 @@ async function heartbeat() {
   }
 }
 
+function expireCampaigns() {
+  void pauseExpiredCampaigns().catch((error) => {
+    console.error("[DM Worker] Campaign expiration failed:", error instanceof Error ? error.message : "Unknown error");
+  });
+}
+
 void heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), HEARTBEAT_INTERVAL_MS);
+expireCampaigns();
+const expiryTimer = setInterval(expireCampaigns, HEARTBEAT_INTERVAL_MS);
 
 async function poll() {
   try {
@@ -52,6 +61,7 @@ async function shutdown(signal: string) {
   console.log(`[DM Worker] ${signal} received, closing worker`);
   clearInterval(heartbeatTimer);
   clearInterval(pollTimer);
+  clearInterval(expiryTimer);
   await worker.close();
   process.exit(0);
 }

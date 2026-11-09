@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUserId, getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
+import { activeCampaignWindow } from "@/lib/campaigns/schedule";
 import {
   calculateCtr,
   CLICK_ROW_SELECT,
@@ -87,7 +88,7 @@ export async function GET(request: NextRequest) {
     }),
     prisma.automation.count({ where: { workspaceId, ...accountFilter } }),
     prisma.automation.count({
-      where: { workspaceId, isActive: true, ...accountFilter },
+      where: { workspaceId, ...activeCampaignWindow(), ...accountFilter },
     }),
     prisma.dmLog.count({
       where: {

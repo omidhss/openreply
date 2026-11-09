@@ -34,9 +34,17 @@ There is one saved Zernio connection and selected profile per workspace. Existin
 | Post picker | Shows the **latest 25 posts**. Older posts are not available through this picker. |
 | Post reporting and analytics | Require Zernio’s **analytics add-on** and synced data. Missing data is not evidence of zero activity. |
 | Follower count snapshots | Can be **up to 24 hours old**. They are reporting snapshots, not live follower checks. |
-| Follow gate | Uses follower status when available. Unknown remains unknown and the existing fail-open behavior is preserved. |
+| Follow gate | Standalone DM and Story campaigns release a gated reply only after a verified follow. Existing comment campaigns keep their previous behavior. |
 | Inbox | Opening conversations and sending replies are supported. A preview is omitted when the API does not provide message direction; this does not mean the thread is empty. |
 | Token refresh | Zernio handles its platform credentials. OpenReply’s direct Meta token refresh does not run on Zernio accounts. |
+
+## DM keyword and Story reply campaigns
+
+On a Zernio account, choose **DM keyword** to reply to an incoming message containing a keyword, or **Story reply** to match text replies to all Stories or a selected Story. You can match any text or specific keywords for Story replies. A Story reply arrives through the inbox, so its text can also match a DM keyword campaign. Each campaign applies its own cooldown and schedule. Story mentions and attachment-only messages do not count as text Story replies.
+
+The Story picker uses [Zernio’s active Story list](https://docs.zernio.com/instagram/list-instagram-stories). Instagram only lists live Stories within their 24-hour lifetime, excludes live video and reshares, and may withhold media previews. If the webhook omits Story context, OpenReply looks up the exact message in [Zernio’s inbox](https://docs.zernio.com/messages/get-inbox-conversation-messages). A selected Story requires a matching Story ID from one of those sources. Automated replies still use the standard [Instagram messaging window and permissions](https://docs.zernio.com/platforms/instagram). When **follow first** is on, an unavailable or negative follow check keeps the reply locked. The confirmation button rechecks the relationship and only unlocks that person’s reply after a positive result.
+
+The per-person cooldown starts when the campaign starts sending its reply or follow prompt. Enter zero to allow each distinct matching message. The schedule accepts an optional start and end in Europe/Rome, or a duration that begins on enablement. At expiration the campaign pauses and sends that have not begun stop, including delayed follow-ups. Saving edits does not restart an expired campaign. Enable it again to start a fresh duration, or set a new end time before enabling a fixed schedule.
 
 ## Operations and troubleshooting
 

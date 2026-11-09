@@ -74,6 +74,7 @@ interface WebhookEntry {
   messaging?: Array<{
     sender?: { id?: string };
     recipient?: { id?: string };
+    conversationId?: string;
     postback?: { mid?: string; title?: string; payload?: string };
     read?: { watermark?: number; seq?: number };
     message?: {
@@ -82,6 +83,9 @@ interface WebhookEntry {
       is_echo?: boolean;
       is_deleted?: boolean;
       is_unsupported?: boolean;
+      storyReply?: { storyId: string | null };
+      excludeStandalone?: boolean;
+      createdAt?: number;
       attachments?: Array<{ type?: string }>;
     };
   }>;
@@ -92,6 +96,10 @@ export interface WebhookMessageEvent {
   messageId: string;
   messageText: string;
   senderId: string;
+  storyReply?: { storyId: string | null };
+  excludeStandalone?: boolean;
+  conversationId?: string;
+  createdAt?: number;
 }
 
 export interface WebhookPostbackEvent {
@@ -99,6 +107,7 @@ export interface WebhookPostbackEvent {
   userId: string;
   payload: string;
   mid?: string;
+  conversationId?: string;
 }
 
 export interface WebhookReadEvent {
@@ -187,6 +196,7 @@ export function parsePostbackEvents(
         userId,
         payload: postbackPayload,
         mid: messaging.postback?.mid,
+        ...(messaging.conversationId ? { conversationId: messaging.conversationId } : {}),
       });
     }
   }
@@ -233,6 +243,10 @@ export function parseMessageEvents(
         messageId,
         messageText: text,
         senderId,
+        ...(message.storyReply ? { storyReply: message.storyReply } : {}),
+        ...(message.excludeStandalone ? { excludeStandalone: true } : {}),
+        ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
+        ...(messaging.conversationId ? { conversationId: messaging.conversationId } : {}),
       });
     }
   }

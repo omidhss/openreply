@@ -15,6 +15,10 @@ import {
   syncCampaignLinks,
 } from "@/lib/campaigns/links";
 import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
+import { parseRomeInput } from "@/lib/campaigns/rome-time";
+import { campaignExpiry, campaignScheduleError, MAX_DURATION_MINUTES, pauseExpiredCampaigns } from "@/lib/campaigns/schedule";
+import { createInstagramContext, type ProviderAccount } from "@/lib/instagram/context";
+import { getActiveStories } from "@/lib/instagram/read-stories";
 import {
   canManageWorkspace,
   getCurrentWorkspaceContext,
@@ -24,11 +28,46 @@ import {
 // immediately), so never cache it at the route or CDN layer.
 export const dynamic = "force-dynamic";
 
+const triggerSchema = z.enum(["COMMENT", "DM_KEYWORD", "STORY_REPLY"]);
+const romeDate = z.string().transform((value, ctx) => {
+  const date = parseRomeInput(value);
+  if (!date) {
+    ctx.addIssue({ code: "custom", message: "Choose a valid, unambiguous date and time in Europe/Rome." });
+    return z.NEVER;
+  }
+  return date;
+}).nullish();
+const duration = z.number().int().min(1).max(MAX_DURATION_MINUTES).nullish();
+const cooldown = z.number().int().min(0).max(MAX_DURATION_MINUTES);
+
+function campaignError(error: string, status = 400) {
+  return NextResponse.json({ success: false, error }, { status });
+}
+
+async function validateStory(account: ProviderAccount, storyId: string) {
+  try {
+    const context = await createInstagramContext(account);
+    if (context.provider !== "ZERNIO") return campaignError("Select a Zernio Instagram account.");
+    const stories = await getActiveStories(context);
+    return stories.some((story) => story.id === storyId)
+      ? null
+      : campaignError("Select an active Story from this Instagram account.");
+  } catch {
+    return campaignError("Could not verify the selected Instagram Story. Try again.", 502);
+  }
+}
+
 const createAutomationSchema = z
   .object({
     name: z.string().min(1).max(100),
     goal: z.string().min(1).max(120).optional().nullable(),
     instagramAccountId: z.string().min(1).optional().nullable(),
+    trigger: triggerSchema.default("COMMENT"),
+    storyId: z.string().min(1).max(255).nullish(),
+    cooldownMinutes: cooldown.default(0),
+    scheduleStartsAt: romeDate,
+    scheduleEndsAt: romeDate,
+    durationMinutes: duration,
     postId: z.string().min(1).optional().nullable(),
     postUrl: z.string().url().optional().nullable(),
     pendingNextReel: z.boolean().optional().default(false),
@@ -72,18 +111,18 @@ const createAutomationSchema = z
   })
   // A campaign must target a specific post, any post, or the next reel.
   .refine(
-    (d) => d.matchAnyPost || d.pendingNextReel || Boolean(d.postId),
+    (d) => d.trigger !== "COMMENT" || d.matchAnyPost || d.pendingNextReel || Boolean(d.postId),
     { message: "Choose which post(s) trigger the campaign", path: ["postId"] }
   )
   // And it must match either specific words or any word.
-  .refine((d) => d.matchAnyWord || d.keywords.length >= 1, {
+  .refine((d) => (d.trigger !== "DM_KEYWORD" && d.matchAnyWord) || d.keywords.some((word) => word.trim()), {
     message: "Add at least one keyword, or match any word",
     path: ["keywords"],
   })
   // An opening DM needs both a message and a button label.
   .refine(
     (d) =>
-      !d.openingDmEnabled ||
+      d.trigger !== "COMMENT" || !d.openingDmEnabled ||
       (Boolean(d.openingDmMessage?.trim()) &&
         Boolean(d.openingDmButtonLabel?.trim())),
     { message: "Opening DM needs a message and a button label", path: ["openingDmMessage"] }
@@ -93,6 +132,12 @@ const updateAutomationSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   goal: z.string().min(1).max(120).optional().nullable(),
   instagramAccountId: z.string().min(1).optional(),
+  trigger: triggerSchema.optional(),
+  storyId: z.string().min(1).max(255).nullish(),
+  cooldownMinutes: cooldown.optional(),
+  scheduleStartsAt: romeDate,
+  scheduleEndsAt: romeDate,
+  durationMinutes: duration,
   postId: z.string().min(1).optional().nullable(),
   postUrl: z.string().url().optional().nullable(),
   pendingNextReel: z.boolean().optional(),
@@ -145,6 +190,8 @@ export async function GET(request: NextRequest) {
     instagramAccountId && instagramAccountId !== "all"
       ? { instagramAccountId }
       : {};
+
+  await pauseExpiredCampaigns(workspaceId);
 
   const automations = await prisma.automation.findMany({
     where: { workspaceId, ...accountFilter },
@@ -351,6 +398,27 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const { trigger } = parsed.data;
+  const isComment = trigger === "COMMENT";
+  if (!isComment && instagramAccount.provider !== "ZERNIO")
+    return campaignError("This trigger requires a Zernio Instagram account.");
+  const storyId = trigger === "STORY_REPLY" ? parsed.data.storyId ?? null : null;
+  if (storyId) {
+    const error = await validateStory(instagramAccount, storyId);
+    if (error) return error;
+  }
+  const schedule = {
+    scheduleStartsAt: parsed.data.scheduleStartsAt ?? null,
+    scheduleEndsAt: parsed.data.scheduleEndsAt ?? null,
+    durationMinutes: parsed.data.durationMinutes ?? null,
+  };
+  const now = new Date();
+  const scheduled = Boolean(schedule.scheduleStartsAt || schedule.scheduleEndsAt || schedule.durationMinutes);
+  const enabledAt = parsed.data.isActive && (scheduled || !isComment) ? now : null;
+  const expiresAt = enabledAt ? campaignExpiry(schedule, enabledAt) : null;
+  const scheduleError = campaignScheduleError(schedule, expiresAt, now);
+  if (scheduleError) return campaignError(scheduleError);
+
   const linkCreates = buildInitialCampaignLinks({
     workspaceId,
     primaryUrl: parsed.data.trackedDestinationUrl,
@@ -358,10 +426,13 @@ export async function POST(request: NextRequest) {
     secondaryLabel: parsed.data.secondaryButtonLabel,
   });
 
-  const { pendingNextReel, matchAnyPost, matchAnyWord, openingDmEnabled } =
-    parsed.data;
+  const pendingNextReel = isComment && parsed.data.pendingNextReel;
+  const matchAnyPost = isComment && parsed.data.matchAnyPost;
+  const matchAnyWord = trigger !== "DM_KEYWORD" && parsed.data.matchAnyWord;
+  const openingDmEnabled = isComment && parsed.data.openingDmEnabled;
+  const publicReplyEnabled = isComment && parsed.data.publicReplyEnabled;
   // A post is only stored for the "specific post" trigger.
-  const isSpecificPost = !pendingNextReel && !matchAnyPost;
+  const isSpecificPost = isComment && !pendingNextReel && !matchAnyPost;
   const publicReplyList = (
     parsed.data.publicReplyMessages.length > 0
       ? parsed.data.publicReplyMessages
@@ -376,6 +447,9 @@ export async function POST(request: NextRequest) {
     data: {
       name: parsed.data.name,
       goal: parsed.data.goal,
+      trigger, storyId,
+      cooldownMinutes: isComment ? 0 : parsed.data.cooldownMinutes,
+      ...schedule, enabledAt, expiresAt,
       // A next-reel campaign has no post yet; the cron binds it once a reel is posted.
       postId: isSpecificPost ? parsed.data.postId : null,
       postUrl: isSpecificPost ? parsed.data.postUrl : null,
@@ -383,7 +457,7 @@ export async function POST(request: NextRequest) {
       matchAnyPost,
       keywords: matchAnyWord ? [] : parsed.data.keywords,
       matchAnyWord,
-      dmTriggerEnabled: parsed.data.dmTriggerEnabled,
+      dmTriggerEnabled: isComment && parsed.data.dmTriggerEnabled,
       dmMessage: parsed.data.dmMessage,
       openingDmEnabled,
       openingDmMessage: openingDmEnabled
@@ -407,11 +481,11 @@ export async function POST(request: NextRequest) {
       followUpDelayMinutes: parsed.data.followUpEnabled
         ? parsed.data.followUpDelayMinutes
         : 0,
-      publicReplyEnabled: parsed.data.publicReplyEnabled,
-      publicReplyMessages: parsed.data.publicReplyEnabled
+      publicReplyEnabled,
+      publicReplyMessages: publicReplyEnabled
         ? publicReplyList
         : [],
-      publicReplyMessage: parsed.data.publicReplyEnabled
+      publicReplyMessage: publicReplyEnabled
         ? publicReplyList[0] ?? parsed.data.publicReplyMessage ?? null
         : null,
       isActive: parsed.data.isActive,
@@ -492,14 +566,18 @@ export async function PATCH(request: NextRequest) {
     ...automationData
   } = parsed.data;
 
+  const trigger = automationData.trigger ?? existing.trigger ?? "COMMENT";
+  const accountId = automationData.instagramAccountId ?? existing.instagramAccountId;
+  const accountChanged = accountId !== existing.instagramAccountId;
+  const storyId = trigger === "STORY_REPLY"
+    ? (automationData.storyId === undefined ? existing.storyId ?? null : automationData.storyId)
+    : null;
+  const storyChanged = Boolean(storyId && (storyId !== existing.storyId || accountChanged));
+
   // Moving a campaign to another account: it must be one of this workspace's.
-  if (
-    automationData.instagramAccountId !== undefined &&
-    automationData.instagramAccountId !== existing.instagramAccountId
-  ) {
+  if (accountChanged || trigger !== "COMMENT") {
     const account = await prisma.instagramAccount.findFirst({
-      where: { id: automationData.instagramAccountId, workspaceId },
-      select: { id: true },
+      where: { id: accountId, workspaceId },
     });
     if (!account) {
       return NextResponse.json(
@@ -507,7 +585,58 @@ export async function PATCH(request: NextRequest) {
         { status: 404 }
       );
     }
+    if (trigger !== "COMMENT" && account.provider !== "ZERNIO")
+      return campaignError("This trigger requires a Zernio Instagram account.");
+    if (storyChanged && storyId) {
+      const error = await validateStory(account, storyId);
+      if (error) return error;
+    }
   }
+
+  if (trigger !== "COMMENT") {
+    Object.assign(automationData, {
+      postId: null, postUrl: null, pendingNextReel: false, matchAnyPost: false,
+      dmTriggerEnabled: false, openingDmEnabled: false, publicReplyEnabled: false, storyId,
+    });
+    if (trigger === "DM_KEYWORD") automationData.matchAnyWord = false;
+  } else if (automationData.trigger || automationData.storyId !== undefined || automationData.cooldownMinutes !== undefined) {
+    automationData.storyId = null;
+    automationData.cooldownMinutes = 0;
+  }
+  if (trigger !== "COMMENT" || automationData.trigger !== undefined) {
+    const any = automationData.matchAnyWord ?? existing.matchAnyWord;
+    const words = automationData.keywords ?? existing.keywords;
+    if (!any && !words.some((word) => word.trim())) return campaignError("Add at least one keyword.");
+    const postId = automationData.postId === undefined ? existing.postId : automationData.postId;
+    if (trigger === "COMMENT" && !postId && !(automationData.matchAnyPost ?? existing.matchAnyPost) &&
+      !(automationData.pendingNextReel ?? existing.pendingNextReel))
+      return campaignError("Choose which post(s) trigger the campaign.");
+  }
+
+  const now = new Date();
+  const wasExpired = Boolean(existing.expiresAt && existing.expiresAt <= now);
+  const scheduleEdited = automationData.scheduleStartsAt !== undefined ||
+    automationData.scheduleEndsAt !== undefined || automationData.durationMinutes !== undefined;
+  const schedule = {
+    scheduleStartsAt: automationData.scheduleStartsAt === undefined ? existing.scheduleStartsAt ?? null : automationData.scheduleStartsAt,
+    scheduleEndsAt: automationData.scheduleEndsAt === undefined ? existing.scheduleEndsAt ?? null : automationData.scheduleEndsAt,
+    durationMinutes: automationData.durationMinutes === undefined ? existing.durationMinutes ?? null : automationData.durationMinutes,
+  };
+  const scheduled = Boolean(schedule.scheduleStartsAt || schedule.scheduleEndsAt || schedule.durationMinutes);
+  const reenable = automationData.isActive === true && (!existing.isActive || wasExpired);
+  const nextActive = automationData.isActive ?? (existing.isActive && !wasExpired);
+  const managed = Boolean(scheduled || existing.enabledAt || existing.expiresAt || trigger !== "COMMENT");
+  const enabledAt = nextActive && managed
+    ? reenable || !existing.enabledAt ? now : existing.enabledAt
+    : null;
+  const expiresAt = enabledAt ? campaignExpiry(schedule, enabledAt) : null;
+  if (scheduleEdited || reenable) {
+    const error = campaignScheduleError(schedule, expiresAt, now);
+    if (error) return campaignError(error);
+  }
+  const lifecycleData = managed && (scheduleEdited || automationData.isActive !== undefined || wasExpired || !existing.enabledAt)
+    ? { isActive: nextActive, enabledAt: enabledAt ?? existing.enabledAt, expiresAt: !nextActive && wasExpired ? existing.expiresAt : expiresAt }
+    : {};
 
   // Keep dependent fields consistent: any-word clears keywords; a disabled
   // opening DM clears its message and button.
@@ -547,8 +676,8 @@ export async function PATCH(request: NextRequest) {
   // for this one before it reads the links.
   const updated = await prisma.$transaction(async (tx) => {
     const campaign = await tx.automation.update({
-      where: { id: automationId },
-      data: automationData,
+      where: { id: automationId, ...(managed ? { updatedAt: existing.updatedAt } : {}) },
+      data: { ...automationData, ...lifecycleData },
     });
 
     await syncCampaignLinks(tx, {
@@ -560,7 +689,12 @@ export async function PATCH(request: NextRequest) {
     });
 
     return campaign;
+  }).catch((error: unknown) => {
+    if (managed && typeof error === "object" && error && "code" in error && error.code === "P2025") return null;
+    throw error;
   });
+
+  if (!updated) return campaignError("The campaign changed. Reload it and try again.", 409);
 
   return NextResponse.json({ success: true, data: updated });
 }

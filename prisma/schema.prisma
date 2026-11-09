@@ -191,6 +191,10 @@ model Automation {
 
   name           String
   goal           String?
+  trigger        CampaignTrigger @default(COMMENT)
+  // Null means all Stories when the trigger is STORY_REPLY.
+  storyId        String?
+  cooldownMinutes Int @default(0)
   postId         String?
   postUrl        String?
   pendingNextReel Boolean @default(false)
@@ -218,6 +222,11 @@ model Automation {
   publicReplyMessage String?
   publicReplyMessages String[] @default([])
   isActive       Boolean @default(true)
+  enabledAt      DateTime?
+  scheduleStartsAt DateTime?
+  scheduleEndsAt DateTime?
+  durationMinutes Int?
+  expiresAt      DateTime?
   wholeWordMatch Boolean @default(true)
   reportShareSlug    String? @unique
   reportShareEnabled Boolean @default(true)
@@ -234,6 +243,13 @@ model Automation {
   @@index([workspaceId])
   @@index([instagramAccountId])
   @@index([postId])
+  @@index([isActive, expiresAt])
+}
+
+enum CampaignTrigger {
+  COMMENT
+  DM_KEYWORD
+  STORY_REPLY
 }
 
 model DmLog {
@@ -256,6 +272,10 @@ model DmLog {
   // outcome is tracked separately. publicReplySentAt makes it idempotent across
   // retries; a DM failure never blocks or re-posts the public reply.
   dmDeliveryUnconfirmed Boolean @default(false)
+  // Durable claim for a standalone inbound trigger, even if the worker dies
+  // while the provider is responding. Also anchors the per-person cooldown.
+  triggerStartedAt DateTime?
+  followPromptSent Boolean @default(false)
   publicReplyDeliveryUnconfirmed Boolean @default(false)
   publicReplySentAt DateTime?
   publicReplyError  String?
@@ -272,6 +292,7 @@ model DmLog {
   @@index([automationId])
   @@index([instagramAccountId])
   @@index([status])
+  @@index([automationId, commenterId, triggerStartedAt])
 }
 
 // Legacy reconciliation model; currently unwired. Runtime code does not read

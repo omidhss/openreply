@@ -19,6 +19,10 @@ import AccountSelect, { type AccountOption } from "@/components/account-select";
 import PostPicker from "@/components/post-picker";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
 import { readCache, writeCache } from "@/lib/client-cache";
+import { formatRomeInput } from "@/lib/campaigns/rome-time";
+import { campaignStatus, useCampaignTime } from "@/lib/campaigns/client-status";
+import type { InstagramStory } from "@/lib/instagram/read-stories";
+import type { CampaignTrigger } from "@/app/generated/prisma/enums";
 import {
   IMPORT_QUEUE_KEY,
   IMPORT_ACCOUNT_KEY,
@@ -27,10 +31,19 @@ import {
 
 type TriggerScope = "specific" | "any" | "next";
 type MatchMode = "specific" | "any";
+type ScheduleMode = "none" | "fixed" | "duration";
+const fieldClass = "w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground";
 
 interface LoadedCampaign {
   id: string;
   name: string;
+  trigger: CampaignTrigger;
+  storyId: string | null;
+  cooldownMinutes: number;
+  scheduleStartsAt: string | null;
+  scheduleEndsAt: string | null;
+  expiresAt: string | null;
+  durationMinutes: number | null;
   postId: string | null;
   postUrl: string | null;
   pendingNextReel: boolean;
@@ -134,6 +147,7 @@ function Toggle({
 export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderProps) {
   const { t } = useI18n();
   const router = useRouter();
+  const now = useCampaignTime();
 
   const [loading, setLoading] = useState(mode === "edit");
   const [notFound, setNotFound] = useState(false);
@@ -146,6 +160,18 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
 
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [isActive, setIsActive] = useState(true);
+  const [savedWindow, setSavedWindow] = useState<{ expiresAt: string | null; scheduleStartsAt: string | null }>({ expiresAt: null, scheduleStartsAt: null });
+  const status = campaignStatus({ isActive, ...savedWindow }, now);
+  const [trigger, setTrigger] = useState<CampaignTrigger>("COMMENT");
+  const [storyScope, setStoryScope] = useState<"all" | "selected">("all");
+  const [storyId, setStoryId] = useState("");
+  const [storyResults, setStoryResults] = useState<{ accountId: string; stories: InstagramStory[]; failed?: boolean } | null>(null);
+  const [storyRefresh, setStoryRefresh] = useState(0);
+  const [cooldownMinutes, setCooldownMinutes] = useState("0");
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("none");
+  const [scheduleStart, setScheduleStart] = useState("");
+  const [scheduleEnd, setScheduleEnd] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState("60");
 
   const [triggerScope, setTriggerScope] = useState<TriggerScope>("specific");
   const [postId, setPostId] = useState<string | null>(null);
@@ -200,6 +226,27 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         .filter(Boolean),
     [keywordText]
   );
+  const isComment = trigger === "COMMENT";
+  const isStory = trigger === "STORY_REPLY";
+  const hasZernio = accounts.find((a) => a.id === selectedAccountId)?.provider === "ZERNIO";
+  const usesKeywords = trigger === "DM_KEYWORD" || matchMode === "specific";
+  const activeStories = storyResults?.accountId === selectedAccountId ? storyResults : null;
+  const selectedStory = activeStories?.stories.find((s) => s.id === storyId);
+
+  useEffect(() => {
+    if (!isStory || storyScope !== "selected" || !hasZernio) return;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ instagramAccountId: selectedAccountId });
+    fetch(`/api/instagram/stories?${params}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!controller.signal.aborted) setStoryResults({ accountId: selectedAccountId, stories: d.success ? d.data : [], failed: !d.success });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setStoryResults({ accountId: selectedAccountId, stories: [], failed: true });
+      });
+    return () => controller.abort();
+  }, [isStory, storyScope, hasZernio, selectedAccountId, storyRefresh]);
 
   // Fetch the connected account's real avatar for the preview (cache-first so
   // it shows instantly on a return visit instead of a blank circle).
@@ -254,6 +301,15 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         const c = (payload.data as LoadedCampaign[]).find((x) => x.id === campaignId);
         if (!c) return setNotFound(true);
         setName(c.name);
+        setTrigger(c.trigger ?? "COMMENT");
+        setStoryScope(c.storyId ? "selected" : "all");
+        setStoryId(c.storyId ?? "");
+        setCooldownMinutes(String(c.cooldownMinutes ?? 0));
+        setScheduleMode(c.durationMinutes ? "duration" : c.scheduleStartsAt || c.scheduleEndsAt ? "fixed" : "none");
+        setDurationMinutes(String(c.durationMinutes ?? 60));
+        setScheduleStart(c.scheduleStartsAt ? formatRomeInput(new Date(c.scheduleStartsAt)) : "");
+        setScheduleEnd(c.scheduleEndsAt ? formatRomeInput(new Date(c.scheduleEndsAt)) : "");
+        setSavedWindow({ expiresAt: c.expiresAt, scheduleStartsAt: c.scheduleStartsAt });
         setSelectedAccountId(c.instagramAccountId);
         setTriggerScope(
           c.matchAnyPost ? "any" : c.pendingNextReel ? "next" : "specific"
@@ -327,6 +383,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   // unset so the user picks it per row.
   function prefillFromRow(row: ImportRow) {
     setName(row.name ?? "");
+    setTrigger("COMMENT");
+    setScheduleMode("none");
     setTriggerScope("specific");
     setPostId(null);
     setPostUrl(null);
@@ -388,16 +446,19 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     setDmMessage((cur) => (cur.includes("{link}") ? cur : `${cur.trim()} {link}`.trim()));
   }
 
-  async function handleSubmit(activeValue: boolean) {
+  async function handleSubmit(activeValue?: boolean) {
     setError(null);
 
     if (!selectedAccountId) return setError(t("Connect an Instagram account first."));
-    if (triggerScope === "specific" && !postId)
+    if (!isComment && !hasZernio) return setError(t("This trigger requires a Zernio Instagram account."));
+    if (isComment && triggerScope === "specific" && !postId)
       return setError(t("Pick a post or reel to trigger the campaign."));
-    if (matchMode === "specific" && keywords.length === 0)
-      return setError(t("Add at least one keyword, or switch to any word."));
+    if (isStory && storyScope === "selected" && !storyId) return setError(t("Select an active Story."));
+    if (usesKeywords && keywords.length === 0)
+      return setError(trigger === "DM_KEYWORD" ? t("Add at least one keyword.") : t("Add at least one keyword, or switch to any word."));
+    if (scheduleMode === "fixed" && !scheduleStart && !scheduleEnd) return setError(t("Choose a start or end time."));
     if (!dmMessage.trim()) return setError(t("Add the DM with the link."));
-    if (openingDmEnabled && (!openingDmMessage.trim() || !openingDmButtonLabel.trim()))
+    if (isComment && openingDmEnabled && (!openingDmMessage.trim() || !openingDmButtonLabel.trim()))
       return setError(t("Your opening DM needs a message and a button label."));
 
     setSaving(true);
@@ -405,19 +466,25 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     const payload = {
       name: name.trim() || `Campaign for @${username}`,
       instagramAccountId: selectedAccountId,
-      postId: triggerScope === "specific" ? postId : null,
-      postUrl: triggerScope === "specific" ? postUrl : null,
-      matchAnyPost: triggerScope === "any",
-      pendingNextReel: triggerScope === "next",
-      matchAnyWord: matchMode === "any",
-      keywords: matchMode === "any" ? [] : keywords,
+      trigger,
+      storyId: isStory && storyScope === "selected" ? storyId : null,
+      cooldownMinutes: isComment ? 0 : Number(cooldownMinutes),
+      scheduleStartsAt: scheduleMode === "fixed" ? scheduleStart || null : null,
+      scheduleEndsAt: scheduleMode === "fixed" ? scheduleEnd || null : null,
+      durationMinutes: scheduleMode === "duration" ? Number(durationMinutes) : null,
+      postId: isComment && triggerScope === "specific" ? postId : null,
+      postUrl: isComment && triggerScope === "specific" ? postUrl : null,
+      matchAnyPost: isComment && triggerScope === "any",
+      pendingNextReel: isComment && triggerScope === "next",
+      matchAnyWord: !usesKeywords,
+      keywords: usesKeywords ? keywords : [],
       wholeWordMatch,
-      dmTriggerEnabled,
+      dmTriggerEnabled: isComment && dmTriggerEnabled,
       dmMessage,
-      openingDmEnabled,
+      openingDmEnabled: isComment && openingDmEnabled,
       openingDmMessage: openingDmEnabled ? openingDmMessage : null,
       openingDmButtonLabel: openingDmEnabled ? openingDmButtonLabel : null,
-      publicReplyEnabled,
+      publicReplyEnabled: isComment && publicReplyEnabled,
       publicReplyMessages: publicReplyEnabled
         ? publicReplyMessages.map((m) => m.trim()).filter(Boolean)
         : [],
@@ -433,7 +500,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       followUpEnabled,
       followUpMessage: followUpEnabled ? followUpMessage.trim() : "",
       followUpDelayMinutes: followUpEnabled ? followUpDelayMinutes : 0,
-      isActive: activeValue,
+      ...(activeValue !== undefined ? { isActive: activeValue } : {}),
     };
 
     try {
@@ -455,7 +522,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         // the picker flags it on the next imported row — the fetch that builds
         // this map doesn't re-run while the builder stays mounted through the
         // import queue.
-        if (triggerScope === "specific" && postId) {
+        if (isComment && triggerScope === "specific" && postId) {
           const assignedPostId = postId;
           setUsedPosts((prev) => ({ ...prev, [assignedPostId]: payload.name }));
         }
@@ -579,10 +646,10 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               </span>
               <span
                 className={`rounded px-2 py-0.5 text-xs font-semibold ${
-                  isActive ? "bg-success/15 text-success" : "bg-zinc-500/15 text-muted"
+                  status === "Active" ? "bg-success/15 text-success" : "bg-zinc-500/15 text-muted"
                 }`}
               >
-                {isActive ? t("LIVE") : t("PAUSED")}
+                {status === "Active" ? t("LIVE") : t(status)}
               </span>
             </>
           ) : (
@@ -601,7 +668,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             </button>
           )}
           {mode === "edit" &&
-            (isActive ? (
+            (status === "Active" || status === "Scheduled" ? (
               <button
                 type="button"
                 onClick={() => handleSubmit(false)}
@@ -620,9 +687,15 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 {t("Go Live")}
               </button>
             ))}
+          {mode === "new" && !importQueue && scheduleMode !== "none" && (
+            <button type="button" disabled={saving} onClick={() => handleSubmit(false)}
+              className="rounded-lg border border-border px-4 py-2 text-sm text-muted hover:text-foreground disabled:opacity-50">
+              {t("Save paused")}
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => handleSubmit(mode === "new" ? true : isActive)}
+            onClick={() => handleSubmit(mode === "new" ? true : undefined)}
             disabled={saving}
             className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
           >
@@ -664,6 +737,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                   setPostId(null);
                   setPostUrl(null);
                   setPostThumb(null);
+                  setStoryId("");
                 }}
                 includeAll={false}
                 label={t("Instagram account")}
@@ -672,7 +746,17 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           )}
         </div>
 
-        <Section title={t("When someone comments on")}>
+        <Section title={t("Campaign trigger")}>
+          <select aria-label={t("Campaign trigger")} className={fieldClass} value={trigger}
+            onChange={(e) => setTrigger(e.target.value as CampaignTrigger)}>
+            <option value="COMMENT">{t("Comment on a post or reel")}</option>
+            <option value="DM_KEYWORD" disabled={!hasZernio}>{t("DM keyword")}</option>
+            <option value="STORY_REPLY" disabled={!hasZernio}>{t("Story reply")}</option>
+          </select>
+          {!hasZernio && <p className="text-xs text-muted">{t("DM keyword and Story reply campaigns require a Zernio Instagram account.")}</p>}
+        </Section>
+
+        {isComment && <Section title={t("When someone comments on")}>
           <Radio
             checked={triggerScope === "specific"}
             onSelect={() => setTriggerScope("specific")}
@@ -701,16 +785,41 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           >
             {t("next post or reel")}
           </Radio>
-        </Section>
+        </Section>}
 
-        <Section title={t("And this comment has")}>
-          <Radio
+        {isStory && <Section title={t("When someone replies to")}>
+          <Radio checked={storyScope === "all"} onSelect={() => setStoryScope("all")}>{t("All Stories")}</Radio>
+          <Radio checked={storyScope === "selected"} onSelect={() => setStoryScope("selected")}>{t("A selected Story")}</Radio>
+          {storyScope === "selected" && <div className="space-y-2">
+            <select className={fieldClass} aria-label={t("Active Story")} value={storyId} onChange={(e) => setStoryId(e.target.value)}>
+              <option value="">{t("Select an active Story.")}</option>
+              {storyId && !selectedStory && <option value={storyId}>{t("Previously selected Story")} ({storyId})</option>}
+              {activeStories?.stories.map((story, index) => (
+                <option key={story.id} value={story.id}>
+                  {index + 1}. {story.timestamp ? formatRomeInput(new Date(story.timestamp)).replace("T", " ") : story.id}{story.mediaType ? ` · ${story.mediaType}` : ""}
+                </option>
+              ))}
+            </select>
+            {selectedStory && (selectedStory.thumbnailUrl || selectedStory.mediaUrl) && (
+              selectedStory.mediaType?.toLowerCase() === "video" && !selectedStory.thumbnailUrl
+                ? <video src={selectedStory.mediaUrl ?? undefined} className="max-h-40 rounded-lg" controls playsInline />
+                // Instagram media URLs are temporary and vary by CDN.
+                // eslint-disable-next-line @next/next/no-img-element
+                : <img src={selectedStory.thumbnailUrl ?? selectedStory.mediaUrl ?? undefined} alt={t("Selected Story preview")} className="max-h-40 rounded-lg" />
+            )}
+            <p className="text-xs text-muted">{!activeStories ? t("Loading Stories…") : activeStories.failed ? t("Could not load active Instagram Stories.") : activeStories.stories.length === 0 ? t("No active Stories found.") : t("Only active Stories are available to select.")}</p>
+            <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setStoryResults(null); setStoryRefresh((n) => n + 1); }}>{t("Refresh Stories")}</button>
+          </div>}
+        </Section>}
+
+        <Section title={isComment ? t("And this comment has") : t("Message text")}>
+          {trigger !== "DM_KEYWORD" && <Radio
             checked={matchMode === "specific"}
             onSelect={() => setMatchMode("specific")}
           >
             {t("a specific word or words")}
-          </Radio>
-          {matchMode === "specific" && (
+          </Radio>}
+          {usesKeywords && (
             <div className="space-y-1">
               <input
                 value={keywordText}
@@ -733,12 +842,13 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               )}
             </div>
           )}
-          <Radio
+          {trigger !== "DM_KEYWORD" && <Radio
             checked={matchMode === "any"}
             onSelect={() => setMatchMode("any")}
           >
-            {t("any word")}
-          </Radio>
+            {isStory ? t("Any text") : t("any word")}
+          </Radio>}
+          {isComment && <>
           <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
             <span className="text-sm text-foreground">
               {t("also reply when someone DMs")}{" "}
@@ -812,10 +922,42 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               </p>
             </div>
           )}
+          </>}
+        </Section>
+
+        {!isComment && <Section title={t("Per-person cooldown")}>
+          <label className="block space-y-1 text-sm text-muted">
+            <span>{t("Cooldown in minutes")}</span>
+            <input type="number" min={0} max={525600} step={1} className={fieldClass} value={cooldownMinutes} onChange={(e) => setCooldownMinutes(e.target.value)} />
+          </label>
+          <p className="text-xs text-muted">{t("Wait this long before the same person can trigger this campaign again. Use 0 for no cooldown.")}</p>
+        </Section>}
+
+        <Section title={t("Schedule (Europe/Rome)")}>
+          <select aria-label={t("Schedule (Europe/Rome)")} value={scheduleMode} className={fieldClass} onChange={(e) => setScheduleMode(e.target.value as ScheduleMode)}>
+            <option value="none">{t("No schedule")}</option>
+            <option value="fixed">{t("Set start or end times")}</option>
+            <option value="duration">{t("Run for a duration")}</option>
+          </select>
+          {scheduleMode === "fixed" && <>
+            <label className="block space-y-1 text-sm text-muted">
+              <span>{t("Start time (optional)")}</span>
+              <input className={fieldClass} type="datetime-local" value={scheduleStart} onChange={(e) => setScheduleStart(e.target.value)} />
+            </label>
+            <label className="block space-y-1 text-sm text-muted">
+              <span>{t("End time (optional)")}</span>
+              <input className={fieldClass} type="datetime-local" value={scheduleEnd} onChange={(e) => setScheduleEnd(e.target.value)} />
+            </label>
+          </>}
+          {scheduleMode === "duration" && <label className="block space-y-1 text-sm text-muted">
+            <span>{t("Duration in minutes")}</span>
+            <input className={fieldClass} type="number" min={1} max={525600} step={1} value={durationMinutes} onChange={(e) => setDurationMinutes(e.target.value)} />
+          </label>}
+          {scheduleMode !== "none" && <p className="text-xs text-muted">{scheduleMode === "duration" ? t("The timer starts when you enable the campaign. After it expires, enable it again to start a new run.") : t("Times use Rome local time. The campaign pauses when it reaches its end time.")}</p>}
         </Section>
 
         <Section title={t("They will get")}>
-          <div className="rounded-lg border border-border p-3">
+          {isComment && <div className="rounded-lg border border-border p-3">
             <div className="flex items-center justify-between">
               <span className="text-sm text-foreground">{t("an opening DM")}</span>
               <Toggle
@@ -842,7 +984,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 />
               </div>
             )}
-          </div>
+          </div>}
           <div className="mt-3 rounded-lg border border-border p-3">
             <div className="flex items-center justify-between">
               <span className="text-sm text-foreground">
@@ -855,6 +997,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             </div>
             {requireFollow && (
               <div className="mt-3 space-y-2">
+                {!isComment && <p className="text-xs text-muted">{t("Reply is sent only after Instagram confirms the person follows you.")}</p>}
                 <textarea
                   value={followPromptMessage}
                   onChange={(e) => setFollowPromptMessage(e.target.value)}
@@ -1006,10 +1149,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             postThumb={postThumb}
             caption={postCaption}
             sampleComment={keywords[0] ?? ""}
-            dmTriggerEnabled={dmTriggerEnabled}
+            standaloneTrigger={!isComment ? trigger : undefined}
+            dmTriggerEnabled={isComment && dmTriggerEnabled}
             publicReplyEnabled={publicReplyEnabled}
             publicReplyMessage={publicReplyMessages.find((m) => m.trim()) ?? ""}
-            openingDmEnabled={openingDmEnabled}
+            openingDmEnabled={isComment && openingDmEnabled}
             openingDmMessage={openingDmMessage}
             openingDmButtonLabel={openingDmButtonLabel}
             revealMessage={dmMessage}

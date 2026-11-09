@@ -27,3 +27,11 @@ To reproduce the comment-to-DM check:
 3. From a different Instagram account, comment the keyword on that post.
 4. Confirm the normalized webhook, the corresponding worker job and sent DM Log, and actual receipt of the DM in Instagram. If the campaign includes a button, tap it and confirm its follow-up; replay the same event and verify no second message is sent.
 5. Disable the test campaign, disconnect the imported test account, remove this installation's webhook through Settings, and revoke the temporary key. Preserve unrelated Zernio subscriptions and accounts.
+
+## Standalone DM and Story replies
+
+`__tests__/instagram-campaigns.db.test.ts` exercises the signed Zernio route, PostgreSQL migrations and claims, the Redis queue, and the real OpenReply worker. The Zernio HTTP responses are simulated. Set `TEST_DATABASE_URL` and `TEST_REDIS_URL` to dedicated test services before running the suite; it creates and drops its own PostgreSQL schema and uses the `dm-processing` queue in the supplied Redis database.
+
+A signed fixture for a text reply to the selected Story matched both that Story campaign and a standalone DM keyword campaign. The worker made one reply request for each. Replaying the webhook after removing the completed job did not send again. The tests also cover independent per-person cooldowns, denying an unverified follow or a different person's tap, and discarding queued work from an expired run after re-enabling.
+
+Live confirmation still requires a team-owned test Instagram account connected to an isolated instance. With both campaign types enabled and a unique keyword, send that keyword as a text reply to a test Story from another account. Check the signed webhook for the Story ID and compare the two OpenReply log entries with the recipient’s inbox. Use distinct harmless messages so each campaign's reply can be identified.

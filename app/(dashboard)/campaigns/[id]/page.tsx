@@ -13,10 +13,20 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
+import { campaignStatus, useCampaignTime } from "@/lib/campaigns/client-status";
+import { formatRomeInput } from "@/lib/campaigns/rome-time";
+import type { CampaignTrigger } from "@/app/generated/prisma/enums";
 
 interface Campaign {
   id: string;
   name: string;
+  trigger: CampaignTrigger;
+  storyId: string | null;
+  cooldownMinutes: number;
+  expiresAt: string | null;
+  scheduleStartsAt: string | null;
+  scheduleEndsAt: string | null;
+  durationMinutes: number | null;
   postId: string | null;
   postUrl: string | null;
   pendingNextReel: boolean;
@@ -61,6 +71,7 @@ export default function CampaignDetailPage() {
   const { t } = useI18n();
   const router = useRouter();
   const { id } = useParams<{ id: string }>();
+  const now = useCampaignTime();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loading, setLoading] = useState(true);
@@ -70,6 +81,7 @@ export default function CampaignDetailPage() {
   const [tab, setTab] = useState<Tab>("insights");
   const [previewTab, setPreviewTab] = useState<PreviewTab>("dm");
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/automations", { cache: "no-store" })
@@ -115,13 +127,19 @@ export default function CampaignDetailPage() {
   async function toggleActive() {
     if (!campaign) return;
     setBusy(true);
+    setActionError(null);
     try {
-      await fetch(`/api/automations?id=${campaign.id}`, {
+      const current = campaignStatus(campaign, now);
+      const response = await fetch(`/api/automations?id=${campaign.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: !campaign.isActive }),
+        body: JSON.stringify({ isActive: current !== "Active" && current !== "Scheduled" }),
       });
-      setCampaign({ ...campaign, isActive: !campaign.isActive });
+      const result = await response.json();
+      if (!result.success) return setActionError(result.error || t("Could not update campaign."));
+      setCampaign({ ...campaign, isActive: result.data.isActive, expiresAt: result.data.expiresAt });
+    } catch {
+      setActionError(t("Could not update campaign."));
     } finally {
       setBusy(false);
     }
@@ -153,13 +171,16 @@ export default function CampaignDetailPage() {
   const hasLink = Boolean(campaign.trackedLinks?.[0]?.destinationUrl);
   const hasSecondLink = Boolean(campaign.trackedLinks?.[1]?.destinationUrl);
 
+  const isComment = !campaign.trigger || campaign.trigger === "COMMENT";
+  const status = campaignStatus(campaign, now);
+  const enabled = status === "Active" || status === "Scheduled";
   const trigger = campaign.matchAnyPost
     ? t("Any post or reel")
     : campaign.pendingNextReel
       ? t("Your next reel")
       : t("A specific post or reel");
   const matchText = campaign.matchAnyWord
-    ? t("Any comment")
+    ? isComment ? t("Any comment") : t("Any text")
     : campaign.keywords.join(", ") || t("No keywords");
 
   const metrics = [
@@ -185,16 +206,16 @@ export default function CampaignDetailPage() {
           <h1 className="truncate text-lg font-semibold">{campaign.name}</h1>
           <span
             className={`shrink-0 rounded px-2 py-0.5 text-xs font-semibold ${
-              campaign.isActive
+              enabled
                 ? "bg-success/10 text-success"
                 : "bg-zinc-500/10 text-muted"
             }`}
           >
-            {campaign.isActive ? t("LIVE") : t("Paused")}
+            {status === "Active" ? t("LIVE") : t(status)}
           </span>
         </div>
 
-        <Summary title={t("When someone comments on")}>
+        {isComment ? <Summary title={t("When someone comments on")}>
           <div className="flex items-center gap-3">
             {postThumb ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -210,9 +231,12 @@ export default function CampaignDetailPage() {
             )}
             <span className="text-sm text-foreground">{trigger}</span>
           </div>
-        </Summary>
+        </Summary> : <Summary title={t("Campaign trigger")}>
+          <FieldBox>{campaign.trigger === "STORY_REPLY" ? t("Story reply") : t("DM keyword")}</FieldBox>
+          {campaign.trigger === "STORY_REPLY" && <FieldBox>{campaign.storyId ? t("A selected Story") : t("All Stories")}</FieldBox>}
+        </Summary>}
 
-        <Summary title={t("And this comment has")}>
+        <Summary title={isComment ? t("And this comment has") : t("Message text")}>
           <FieldBox>{matchText}</FieldBox>
           {campaign.dmTriggerEnabled && (
             <p className="text-xs text-muted">
@@ -229,6 +253,13 @@ export default function CampaignDetailPage() {
             </div>
           )}
         </Summary>
+
+        {!isComment && <Summary title={t("Cooldown in minutes")}><FieldBox>{String(campaign.cooldownMinutes)}</FieldBox></Summary>}
+        {(campaign.scheduleStartsAt || campaign.scheduleEndsAt || campaign.durationMinutes) && <Summary title={t("Schedule (Europe/Rome)")}>
+          {campaign.scheduleStartsAt && <FieldBox>{t("Starts {time}", { time: formatRomeInput(new Date(campaign.scheduleStartsAt)).replace("T", " ") })}</FieldBox>}
+          {(campaign.expiresAt || campaign.scheduleEndsAt) && <FieldBox>{t("Ends {time}", { time: formatRomeInput(new Date((campaign.expiresAt ?? campaign.scheduleEndsAt)!)).replace("T", " ") })}</FieldBox>}
+          {campaign.durationMinutes && <FieldBox>{t("Duration in minutes")}: {campaign.durationMinutes}</FieldBox>}
+        </Summary>}
 
         {campaign.openingDmEnabled && (
           <Summary title={t("They will get an opening DM")}>
@@ -315,15 +346,16 @@ export default function CampaignDetailPage() {
               onClick={toggleActive}
               disabled={busy}
               className={`rounded border px-3 py-1.5 text-sm disabled:opacity-50 ${
-                campaign.isActive
+                enabled
                   ? "border-error/30 text-error hover:bg-error/10"
                   : "border-success/30 text-success hover:bg-success/10"
               }`}
             >
-              {campaign.isActive ? t("Stop") : t("Resume")}
+              {enabled ? t("Stop") : t("Resume")}
             </button>
           </div>
         </div>
+        {actionError && <p role="alert" className="text-sm text-error">{actionError}</p>}
 
         {tab === "insights" && (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -349,6 +381,7 @@ export default function CampaignDetailPage() {
             caption=""
             sampleComment={campaign.matchAnyWord ? t("nice!") : campaign.keywords[0] ?? "LINK"}
             dmTriggerEnabled={campaign.dmTriggerEnabled}
+            standaloneTrigger={campaign.trigger === "DM_KEYWORD" || campaign.trigger === "STORY_REPLY" ? campaign.trigger : undefined}
             publicReplyEnabled={campaign.publicReplyEnabled}
             publicReplyMessage={publicReplies[0] ?? ""}
             openingDmEnabled={campaign.openingDmEnabled}

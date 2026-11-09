@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db/client';
 import { getDMQueue, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/client';
 import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
+import { activeCampaignWindow } from '@/lib/campaigns/schedule';
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 type InstagramPayload = Parameters<typeof parseCommentEvents>[0];
@@ -80,6 +81,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           userId: event.userId,
           payload: event.payload,
           mid: event.mid,
+          ...(provider === "ZERNIO" && event.conversationId ? { conversationId: event.conversationId } : {}),
         },
         {
           // BullMQ forbids ":" in custom job ids, and the payload is
@@ -108,6 +110,13 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           messageId: event.messageId,
           messageText: event.messageText,
           senderId: event.senderId,
+          ...(provider === "ZERNIO" ? {
+            provider,
+            storyReply: event.storyReply,
+            excludeStandalone: event.excludeStandalone,
+            conversationId: event.conversationId,
+            triggeredAt: event.createdAt,
+          } : {}),
         },
         {
           // Message ids can contain characters BullMQ rejects in a job id (":"
@@ -141,7 +150,8 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           commenterId: event.userId,
           status: "SENT",
           automation: {
-            isActive: true,
+            ...activeCampaignWindow(),
+            trigger: "COMMENT",
             openingDmEnabled: true,
             instagramAccount: {
               instagramId: event.instagramAccountId,
@@ -152,8 +162,10 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           automation: {
             select: {
               id: true,
+              enabledAt: true,
             },
           },
+          createdAt: true,
         },
       });
 
@@ -171,6 +183,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
             userId: event.userId,
             payload: `reveal:${automation.id}`,
             fallback: true,
+            ...(automation.enabledAt ? { triggeredAt: log.createdAt.getTime() } : {}),
           },
           {
             delay: OPENING_DM_READ_FALLBACK_DELAY_MS,

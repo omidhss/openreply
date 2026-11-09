@@ -28,6 +28,7 @@
 import { MAX_COMMENT_SEND_ATTEMPTS } from "@/lib/queue/comment-delivery";
 import { hasLegacyUnconfirmedDelivery } from "@/lib/instagram/delivery-errors";
 import { prisma } from "@/lib/db/client";
+import { activeCampaignWindow } from "@/lib/campaigns/schedule";
 import { getDMQueue } from "@/lib/queue/client";
 import {
   getRecentMediaComments,
@@ -69,7 +70,7 @@ function errMessage(error: unknown): string {
 /** One reconciliation pass across every active campaign. */
 export async function reconcileComments(): Promise<void> {
   const automations = await prisma.automation.findMany({
-    where: { isActive: true },
+    where: { ...activeCampaignWindow(), trigger: "COMMENT" },
     select: {
       id: true,
       name: true,
@@ -264,6 +265,7 @@ async function sweepCampaign({
       .slice(0, MAX_NEW_PER_SWEEP);
 
     for (const c of fresh) {
+      const triggeredAt = Date.parse(c.timestamp);
       // No deterministic jobId here: a retained completed/failed job from an
       // earlier sweep would otherwise be treated as a duplicate and silently
       // drop this add, so the comment would never be retried. Dedup is handled
@@ -286,6 +288,7 @@ async function sweepCampaign({
             ? automation.postId
             : undefined,
         source: "POLLING",
+        ...(Number.isFinite(triggeredAt) ? { triggeredAt } : {}),
       });
       stat.enqueued += 1;
     }

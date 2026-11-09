@@ -28,7 +28,7 @@ async function sendZernioMessage({
 }) {
   const path = commentId
     ? `/inbox/comments/${encodeURIComponent(postId ?? commentId)}/${encodeURIComponent(commentId)}/private-reply`
-    : `/inbox/conversations/${encodeURIComponent(recipientId!)}/messages`;
+    : `/inbox/conversations/${encodeURIComponent(context.conversationId ?? recipientId!)}/messages`;
   const body = {
     accountId: context.accountId,
     message: buttons ? text.slice(0, 640) : text,
