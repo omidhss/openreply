@@ -34,6 +34,16 @@ type MatchMode = "specific" | "any";
 type ScheduleMode = "none" | "fixed" | "duration";
 const fieldClass = "w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground";
 
+function isOptionalUrl(value: string) {
+  if (!value) return true;
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 interface LoadedCampaign {
   id: string;
   name: string;
@@ -457,9 +467,21 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
     if (usesKeywords && keywords.length === 0)
       return setError(trigger === "DM_KEYWORD" ? t("Add at least one keyword.") : t("Add at least one keyword, or switch to any word."));
     if (scheduleMode === "fixed" && !scheduleStart && !scheduleEnd) return setError(t("Choose a start or end time."));
-    if (!dmMessage.trim()) return setError(t("Add the DM with the link."));
+    if (!dmMessage.trim()) return setError(t("Write a DM reply."));
     if (isComment && openingDmEnabled && (!openingDmMessage.trim() || !openingDmButtonLabel.trim()))
       return setError(t("Your opening DM needs a message and a button label."));
+
+    const primaryUrl = trackedDestinationUrl.trim();
+    const secondaryUrl = secondaryDestinationUrl.trim();
+    if (!isOptionalUrl(primaryUrl)) {
+      setLinkOpen(true);
+      return setError(t("Enter a full URL for the first tracked link, such as https://example.com, or leave it blank."));
+    }
+    if (!isOptionalUrl(secondaryUrl)) {
+      setLinkOpen(true);
+      setSecondLinkOpen(true);
+      return setError(t("Enter a full URL for the second tracked link, such as https://example.com, or leave it blank."));
+    }
 
     setSaving(true);
 
@@ -488,9 +510,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       publicReplyMessages: publicReplyEnabled
         ? publicReplyMessages.map((m) => m.trim()).filter(Boolean)
         : [],
-      trackedDestinationUrl: trackedDestinationUrl.trim() || "",
+      trackedDestinationUrl: primaryUrl,
       linkButtonLabel: linkButtonLabel.trim() || "Open link",
-      secondaryDestinationUrl: secondaryDestinationUrl.trim() || "",
+      secondaryDestinationUrl: secondaryUrl,
       secondaryButtonLabel: secondaryButtonLabel.trim() || "Open link",
       requireFollow,
       followPromptMessage: requireFollow ? followPromptMessage.trim() : "",
@@ -1023,7 +1045,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
 
         <Section title={t("And then, they will get")}>
           <div className="rounded-lg border border-border p-3 space-y-2">
-            <span className="text-sm text-foreground">{t("a DM with a link")}</span>
+            <span className="text-sm text-foreground">{t("a DM reply")}</span>
             <textarea
               value={dmMessage}
               onChange={(e) => setDmMessage(e.target.value)}
@@ -1035,6 +1057,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             {linkOpen ? (
               <div className="space-y-2">
                 <input
+                  aria-label={t("First tracked link URL (optional)")}
+                  inputMode="url"
                   value={trackedDestinationUrl}
                   onChange={(e) => setTrackedDestinationUrl(e.target.value)}
                   onBlur={ensureLinkToken}
@@ -1051,6 +1075,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 {secondLinkOpen ? (
                   <div className="space-y-2 border-t border-border pt-2">
                     <input
+                      aria-label={t("Second tracked link URL (optional)")}
+                      inputMode="url"
                       value={secondaryDestinationUrl}
                       onChange={(e) => setSecondaryDestinationUrl(e.target.value)}
                       placeholder="https://yourlink.com/second"
@@ -1084,7 +1110,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               </button>
             )}
             <p className="text-xs text-muted">
-              {"{link}"} {t("inserts the tracked link;")} {"{username}"} {t("personalizes.")}
+              {t("Tracked links are optional.")} {"{link}"} {t("inserts the tracked link;")} {"{username}"} {t("personalizes.")}
             </p>
           </div>
           <div className="mt-3 rounded-lg border border-border p-3">

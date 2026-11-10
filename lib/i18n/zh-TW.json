@@ -1,4 +1,11 @@
 {
+  "Write a DM reply.": "請撰寫私訊回覆。",
+  "Enter a full URL for the first tracked link, such as https://example.com, or leave it blank.": "請輸入第一個追蹤連結的完整網址，例如 https://example.com，或留空。",
+  "Enter a full URL for the second tracked link, such as https://example.com, or leave it blank.": "請輸入第二個追蹤連結的完整網址，例如 https://example.com，或留空。",
+  "a DM reply": "私訊回覆",
+  "First tracked link URL (optional)": "第一個追蹤連結網址（選填）",
+  "Second tracked link URL (optional)": "第二個追蹤連結網址（選填）",
+  "Tracked links are optional.": "追蹤連結為選填。",
   "Expired": "已到期",
   "Save paused": "儲存為暫停",
   "Campaign trigger": "活動觸發條件",

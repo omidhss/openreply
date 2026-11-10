@@ -1,4 +1,11 @@
 {
+  "Write a DM reply.": "Escreva uma resposta por DM.",
+  "Enter a full URL for the first tracked link, such as https://example.com, or leave it blank.": "Insira a URL completa do primeiro link rastreado, como https://example.com, ou deixe o campo em branco.",
+  "Enter a full URL for the second tracked link, such as https://example.com, or leave it blank.": "Insira a URL completa do segundo link rastreado, como https://example.com, ou deixe o campo em branco.",
+  "a DM reply": "uma resposta por DM",
+  "First tracked link URL (optional)": "URL do primeiro link rastreado (opcional)",
+  "Second tracked link URL (optional)": "URL do segundo link rastreado (opcional)",
+  "Tracked links are optional.": "Os links rastreados são opcionais.",
   "Expired": "Expirada",
   "Save paused": "Salvar como pausada",
   "Campaign trigger": "Gatilho da campanha",

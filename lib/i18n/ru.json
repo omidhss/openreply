@@ -1,4 +1,11 @@
 {
+  "Write a DM reply.": "Напишите ответ в личные сообщения.",
+  "Enter a full URL for the first tracked link, such as https://example.com, or leave it blank.": "Введите полный URL первой отслеживаемой ссылки, например https://example.com, или оставьте поле пустым.",
+  "Enter a full URL for the second tracked link, such as https://example.com, or leave it blank.": "Введите полный URL второй отслеживаемой ссылки, например https://example.com, или оставьте поле пустым.",
+  "a DM reply": "ответ в личные сообщения",
+  "First tracked link URL (optional)": "URL первой отслеживаемой ссылки (необязательно)",
+  "Second tracked link URL (optional)": "URL второй отслеживаемой ссылки (необязательно)",
+  "Tracked links are optional.": "Отслеживаемые ссылки необязательны.",
   "Expired": "Истекла",
   "Save paused": "Сохранить без запуска",
   "Campaign trigger": "Триггер кампании",
