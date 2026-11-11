@@ -73,30 +73,6 @@ function inConversation(context: InstagramContext, conversationId?: string): Ins
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
-// How long to wait before re-checking a follow that came back false: one
-// delay per re-check, each counted from the previous check.
-//
-// `is_user_follow_business` does not reflect a brand-new follow right away, and
-// the follow gate asks people to follow and tap a button that is sitting in
-// front of them — so tapping seconds after following is the normal case, not
-// the exception. Rejecting on the first `false` therefore turns away the exact
-// people who did what was asked, and they get told to follow an account they
-// already follow.
-//
-// Two checks rather than one long wait: measured, a follow still read `false`
-// 17 s after it happened and `true` by ~68 s. An early check catches the fast
-// ones sooner; the last still covers the slow ones.
-const FOLLOW_RECHECK_DELAYS_MS = (
-  process.env.FOLLOW_RECHECK_DELAYS_MS ?? "20000,40000"
-)
-  .split(",")
-  .map(Number)
-  .filter((ms) => ms > 0);
-const FOLLOW_RECHECK_TOTAL_MS = FOLLOW_RECHECK_DELAYS_MS.reduce(
-  (total, ms) => total + ms,
-  0
-);
-
 /**
  * Sends Meta answered with an error but may well have delivered anyway.
  *
@@ -873,58 +849,6 @@ async function sendPostbackOnce({
   }
 }
 
-// Tells someone whose "I'm following" tap is being re-checked that it is being
-// looked at, so the chat does not sit silent while Instagram catches up with
-// the follow. Opt-in through FOLLOW_RECHECK_ACK_MESSAGE, and best-effort: it
-// never holds up the re-check, which is already queued when this runs.
-async function sendFollowRecheckAck({
-  context,
-  instagramAccountId,
-  automationId,
-  userId,
-  operationId,
-  beforeSend,
-}: {
-  context: InstagramContext;
-  instagramAccountId: string;
-  automationId: string;
-  userId: string;
-  operationId: string | null;
-  beforeSend: () => Promise<void>;
-}): Promise<void> {
-  const message = process.env.FOLLOW_RECHECK_ACK_MESSAGE?.trim();
-  if (!message) return;
-  try {
-    // One acknowledgement per re-check cycle: a burst of taps collapses into a
-    // single re-check (bucketed job id) and should get a single reply too.
-    const first = await getRedisConnection().set(
-      `follow_recheck_ack:${automationId}:${userId}`,
-      "1",
-      "PX",
-      FOLLOW_RECHECK_TOTAL_MS,
-      "NX"
-    );
-    if (first !== "OK") return;
-    const send = async () => {
-      await beforeSend();
-      await sendDirectMessage({ context, instagramAccountId, userId, message });
-    };
-    // Its own id: the tap's id is claimed later by the link or prompt that
-    // the re-check sends, and claiming it here would suppress that message.
-    // Without an id the Redis NX above is the only dedupe.
-    if (operationId) {
-      await sendPostbackOnce({ operationId: `${operationId}:ack`, send });
-    } else {
-      await send();
-    }
-  } catch (error) {
-    console.log(
-      "[DM Worker] Failed to send follow re-check acknowledgement:",
-      formatError(error),
-    );
-  }
-}
-
 /**
  * Deliver the reveal message after a user taps an opening DM's button.
  * The postback payload is `reveal:<automationId>`; the sender is the user's
@@ -932,6 +856,10 @@ async function sendFollowRecheckAck({
  */
 async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   const { instagramAccountId, userId, payload, fallback } = job.data;
+
+  // Retired delayed checks may still be in Redis during a rolling upgrade.
+  // Only a fresh button tap should produce a response.
+  if (job.data.followRecheck || (job.data.followRecheckAttempt ?? 0) > 0) return;
 
   const isFollowCheck = payload.startsWith("followcheck:");
   if (!isFollowCheck && !payload.startsWith("reveal:")) return;
@@ -1011,11 +939,16 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   }
 
   // Personalize {username}. The postback carries only the tapper's IGSID.
-  const commenterName = await resolveRecipientName({
-    context: accessToken,
-    workspaceId: automation.workspaceId,
-    recipientId: userId,
-  });
+  const [commenterName, follows] = await Promise.all([
+    resolveRecipientName({
+      context: accessToken,
+      workspaceId: automation.workspaceId,
+      recipientId: userId,
+    }),
+    automation.requireFollow
+      ? getUserFollowStatus({ context: accessToken, recipientId: userId })
+      : Promise.resolve(null),
+  ]);
 
   const operationId = createHash("sha256")
     .update(JSON.stringify([
@@ -1028,10 +961,6 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
 
   // Every follow gate requires a verified relationship before releasing a reply.
   if (automation.requireFollow) {
-    const follows = await getUserFollowStatus({
-      context: accessToken,
-      recipientId: userId,
-    });
     // A read fallback needs a confirmed follow. Instagram only reports follow
     // status once the person has tapped a button (before that it answers
     // "User consent is required", i.e. null), so failing open here handed the
@@ -1040,73 +969,8 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     if (follows !== true) {
       if (fallback) return;
 
-      // A tap on an opening-DM button is not a claim to follow — most people
-      // who tap it simply don't follow yet — so they get the follow prompt
-      // right away. Only the prompt's own button earns the delayed re-check;
-      // holding an opening tap for it left people staring at a silent chat.
-      if (!fromOpeningDm) {
-        // A `false` on a button tap: give the follow time to register and look
-        // again, rather than rejecting someone who just followed.
-        //
-        // The job id is bucketed by the recheck window, not fixed per user.
-        // BullMQ keeps completed jobs (removeOnComplete: count 1000) and silently
-        // drops an add whose id is still retained, so a fixed id let a person be
-        // re-checked once and then never again — their next false tap did
-        // nothing at all, no link and no prompt. Bucketing still collapses a burst
-        // of taps into a single re-check, which is what the fixed id was for.
-        //
-        // Jobs queued before re-checks were counted carry only `followRecheck`,
-        // which meant one re-check done.
-        const rechecksDone =
-          job.data.followRecheckAttempt ?? (job.data.followRecheck ? 1 : 0);
-        if (rechecksDone < FOLLOW_RECHECK_DELAYS_MS.length) {
-          const delay = FOLLOW_RECHECK_DELAYS_MS[rechecksDone];
-          const window = Math.floor(Date.now() / delay);
-          await getDMQueue().add(
-            POSTBACK_JOB_NAME,
-            {
-              ...job.data,
-              ...(triggeredAt !== undefined ? { triggeredAt } : {}),
-              followRecheck: true,
-              followRecheckAttempt: rechecksDone + 1,
-            },
-            {
-              delay,
-              jobId: `postback_recheck_${automation.id}_${userId}_${standalone ? `${marker}_` : ""}${rechecksDone + 1}_${window}`,
-            }
-          );
-          if (rechecksDone === 0 && !standalone) {
-            await sendFollowRecheckAck({
-              context: accessToken,
-              instagramAccountId: automation.instagramAccount.instagramId,
-              automationId: automation.id,
-              userId,
-              operationId,
-              beforeSend,
-            });
-          }
-          return;
-        }
-
-        // The recheck window elapsed without a verified follow.
-        await prisma.operationalEvent
-          .create({
-            data: {
-              workspaceId: automation.workspaceId,
-              source: "WORKER",
-              level: "INFO",
-              message: "Follow gate rejected a button tap",
-              payload: {
-                automationId: automation.id,
-                automationName: automation.name,
-                userId,
-                commenterName,
-              },
-            },
-          })
-          .catch(() => {});
-      }
-
+      // Answer an unverified tap in this job instead of making the person
+      // wait through timed checks. A subsequent tap requests a fresh check.
       const promptText = renderMessageWithoutLink({
         message:
           (fromOpeningDm ? automation.followPromptMessage : automation.followReminderMessage) ||
@@ -1146,6 +1010,17 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           create: { ...reminderLog, status: "SENT", dmSentAt: new Date() },
           update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
         });
+        if (delivered && !fromOpeningDm) {
+          await prisma.operationalEvent.create({
+            data: {
+              workspaceId: automation.workspaceId,
+              source: "WORKER",
+              level: "INFO",
+              message: "Follow gate rejected a button tap",
+              payload: { automationId: automation.id, automationName: automation.name, userId, commenterName },
+            },
+          }).catch(() => {});
+        }
       } catch (error) {
         await prisma.dmLog.upsert({
           where: reminderWhere,

@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { QueueEvents, type Worker, type Job } from "bullmq";
+import { QueueEvents, type Worker } from "bullmq";
 import { NextRequest } from "next/server";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -23,7 +23,7 @@ import { POST as webhook } from "@/app/api/zernio/webhook/[workspaceId]/route";
 import { pauseExpiredCampaigns } from "@/lib/campaigns/schedule";
 import { formatRomeInput, parseRomeInput } from "@/lib/campaigns/rome-time";
 import { encryptToken } from "@/lib/meta/oauth";
-import { getDMQueue, getRedisConnection, type DmQueueJob, type ProcessPostbackJob } from "@/lib/queue/client";
+import { getDMQueue, getRedisConnection, type DmQueueJob } from "@/lib/queue/client";
 import { createDMWorker } from "@/lib/queue/dm-worker";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
@@ -206,23 +206,22 @@ describe.skipIf(!dbUrl || !redisUrl)("Zernio automation through PostgreSQL and R
     await finish(await receive("tap-unknown", { text: null, metadata: tap }));
     follows = false;
     await finish(await receive("tap-not-following", { text: null, metadata: tap }));
-    expect(sent).toHaveLength(1);
-    // Promote the final re-check to exercise the reminder without waiting a minute.
-    const pending = (await getDMQueue().getDelayed()).filter((job) => job.name === "process-postback");
-    for (const job of pending) {
-      const postback = job as Job<ProcessPostbackJob>;
-      await postback.updateData({ ...postback.data, followRecheckAttempt: 2 });
-      await job.promote();
-      await finish(job);
-    }
-    expect(sent.slice(1).every((item) => item.message === "Please follow and try again")).toBe(true);
-    expect(sent.length).toBeGreaterThan(1);
+    expect(sent.map(item => item.message)).toEqual([
+      "Please follow", "Please follow and try again", "Please follow and try again",
+    ]);
+    expect((await getDMQueue().getDelayed()).filter(job => job.name === "process-postback")).toHaveLength(0);
     expect(sent.at(-1)?.buttons?.[0]?.payload).toBe(payload);
     const reminderCount = sent.length;
     follows = true;
     await finish(await receive("tap-verified", { text: null, metadata: tap }));
     await finish(await receive("tap-replayed", { text: null, metadata: tap }));
     expect(sent.at(-1)?.message).toBe("Protected reply");
+    expect(sent).toHaveLength(reminderCount + 1);
+    const retiredCheck = await getDMQueue().add("process-postback", {
+      instagramAccountId: igId, accountConnectionId: accountId,
+      userId: "person", payload: payload!, followRecheck: true, followRecheckAttempt: 1,
+    });
+    await retiredCheck.waitUntilFinished(events, 10_000);
     expect(sent).toHaveLength(reminderCount + 1);
     expect(await receive("empty", { text: null, metadata: { storyReply: true } })).toBeUndefined();
     await finish(await receive("mention", { metadata: { isStoryMention: true, storyReply: true } }));
