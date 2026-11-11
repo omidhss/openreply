@@ -45,12 +45,13 @@ export default function LogsPage() {
   const [logs, setLogs] = useState<DmLog[]>([]);
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("all");
   const [page, setPage] = useState(1);
 
-  const fetchLogs = useCallback(async () => {
+  const fetchLogs = useCallback(async (signal: AbortSignal) => {
     try {
       const params = new URLSearchParams({ page: String(page), limit: "20" });
       if (statusFilter !== "ALL") params.set("status", statusFilter);
@@ -58,16 +59,18 @@ export default function LogsPage() {
         params.set("instagramAccountId", selectedAccountId);
       }
 
-      const res = await fetch(`/api/logs?${params}`);
+      const res = await fetch(`/api/logs?${params}`, { cache: "no-store", signal });
       const data = await res.json();
-      if (data.success) {
+      if (!signal.aborted) {
+        if (!res.ok || !data.success) throw new Error("Log request failed");
         setLogs(data.data.logs);
         setPagination(data.data.pagination);
+        setError(false);
       }
-    } catch (err) {
-      console.error("Failed to fetch logs:", err);
+    } catch {
+      if (!signal.aborted) setError(true);
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [page, statusFilter, selectedAccountId]);
 
@@ -81,10 +84,20 @@ export default function LogsPage() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let refreshTimer: number;
+    async function refresh() {
+      if (document.visibilityState === "visible") await fetchLogs(controller.signal);
+      if (!controller.signal.aborted) refreshTimer = window.setTimeout(refresh, 10_000);
+    }
     const timer = window.setTimeout(() => {
-      void fetchLogs();
+      void refresh();
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+      window.clearTimeout(refreshTimer);
+    };
   }, [fetchLogs]);
 
   function handleFilterChange(status: string) {
@@ -101,6 +114,7 @@ export default function LogsPage() {
 
   return (
     <div className="space-y-6">
+      {error && <p role="alert" className="rounded border border-error/30 bg-error/10 p-3 text-sm text-error">{t("Could not load DM logs. Retrying automatically.")}</p>}
       {/* Filters */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="flex flex-wrap gap-2">
@@ -139,7 +153,7 @@ export default function LogsPage() {
             <thead>
               <tr className="border-b border-border text-left">
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">{t("Commenter")}</th>
-                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">{t("Comment")}</th>
+                <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">{t("Message")}</th>
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">{t("Campaign")}</th>
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">{t("Account")}</th>
                 <th className="px-4 py-4 text-xs font-semibold text-muted uppercase tracking-wider sm:px-6">{t("Status")}</th>
@@ -158,7 +172,7 @@ export default function LogsPage() {
                   ))}
                 </>
               )}
-              {!loading && logs.length === 0 && (
+              {!loading && !error && logs.length === 0 && (
                 <tr>
                   <td colSpan={6} className="px-4 py-12 text-center text-muted sm:px-6">
                     {t("No logs found")}

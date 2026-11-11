@@ -5,6 +5,8 @@ import DashboardShell from "@/components/dashboard-shell";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import { ensureWorkspaceForUser } from "@/lib/workspace";
+import { cookies } from "next/headers";
+import { ThemeProvider } from "@/components/theme-provider";
 
 export async function generateMetadata() {
   const { t } = await getI18n();
@@ -17,6 +19,7 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const { locale } = await getI18n();
+  const theme = (await cookies()).get("openreply-theme")?.value === "dark" ? "dark" : "light";
   const session = await auth();
 
   if (!session?.user?.id) {
@@ -35,6 +38,7 @@ export default async function DashboardLayout({
 
   return (
     <I18nProvider locale={locale}>
+      <ThemeProvider initialTheme={theme}>
       <DashboardShell
         workspaceName={workspace.name}
         instagramUsername={accounts[0]?.username ?? null}
@@ -42,6 +46,7 @@ export default async function DashboardLayout({
       >
         {children}
       </DashboardShell>
+      </ThemeProvider>
     </I18nProvider>
   );
 }

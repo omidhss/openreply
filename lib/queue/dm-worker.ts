@@ -675,10 +675,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         context: accessToken,
         recipientId: commenterId,
       });
-      sendFollowPrompt =
-        accessToken.provider === "ZERNIO"
-          ? alreadyFollows === false
-          : alreadyFollows !== true;
+      sendFollowPrompt = alreadyFollows !== true;
     }
 
     let claimed;
@@ -1029,9 +1026,8 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     ]))
     .digest("hex");
 
-  // Standalone prompts and read fallbacks always need a positive check.
-  // Keep the legacy button-tap behavior when the relationship is unknown.
-  if ((isFollowCheck || fallback) && automation.requireFollow) {
+  // Every follow gate requires a verified relationship before releasing a reply.
+  if (automation.requireFollow) {
     const follows = await getUserFollowStatus({
       context: accessToken,
       recipientId: userId,
@@ -1041,7 +1037,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     // "User consent is required", i.e. null), so failing open here handed the
     // link to anyone who read the opening DM and waited, follower or not.
     if (fallback && follows !== true) return;
-    if (follows === false || (standalone && follows !== true)) {
+    if (follows !== true) {
       if (fallback) return;
 
       // A tap on an opening-DM button is not a claim to follow — most people
@@ -1113,12 +1109,24 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
 
       const promptText = renderMessageWithoutLink({
         message:
-          automation.followPromptMessage ||
-          "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
+          (fromOpeningDm ? automation.followPromptMessage : automation.followReminderMessage) ||
+          (fromOpeningDm
+            ? "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over"
+            : "I couldn't confirm your follow yet. Please follow this page, then tap the button again."),
         commenterName,
       });
+      const reminderLog = {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        commenterName,
+        commentText: "(follow confirmation)",
+        commentId: `follow-reminder:${operationId}:${job.data.mid ?? job.id}`,
+      };
+      const reminderWhere = { automationId_commentId: { automationId: automation.id, commentId: reminderLog.commentId } };
       try {
-        await sendPostbackOnce({
+        const delivered = await sendPostbackOnce({
           operationId: standalone ? `${operationId}:prompt:${job.data.mid ?? job.id}` : operationId,
           send: async () => {
             await beforeSend();
@@ -1133,7 +1141,17 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
             });
           },
         });
+        if (delivered) await prisma.dmLog.upsert({
+          where: reminderWhere,
+          create: { ...reminderLog, status: "SENT", dmSentAt: new Date() },
+          update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
+        });
       } catch (error) {
+        await prisma.dmLog.upsert({
+          where: reminderWhere,
+          create: { ...reminderLog, status: "FAILED", errorMessage: formatError(error), dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error) },
+          update: { status: "FAILED", errorMessage: formatError(error), dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error) },
+        });
         console.log(
           "[DM Worker] Failed to re-send follow prompt:",
           formatError(error),
@@ -1514,10 +1532,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
         context: accessToken,
         recipientId: senderId,
       });
-      sendFollowPrompt =
-        !standalone && accessToken.provider === "ZERNIO"
-          ? follows === false
-          : follows !== true;
+      sendFollowPrompt = follows !== true;
     }
 
     const claim = standalone ? await claimInboundDelivery(automation, logBase, triggeredAt) : null;

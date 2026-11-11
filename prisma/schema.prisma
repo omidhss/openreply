@@ -212,6 +212,7 @@ model Automation {
   linkButtonLabel      String?
   requireFollow           Boolean @default(false)
   followPromptMessage     String?
+  followReminderMessage   String?
   followPromptButtonLabel String?
   followUpEnabled Boolean @default(false)
   followUpMessage String?

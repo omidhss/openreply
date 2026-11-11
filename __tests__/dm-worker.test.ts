@@ -1185,7 +1185,7 @@ describe("DM Worker — DM keyword trigger", () => {
 });
 
 describe("Zernio worker routing", () => {
-  it("fails open on unknown follow status and sends once through the selected provider", async () => {
+  it("sends a follow prompt instead of the reply when Zernio cannot verify the follow", async () => {
     mockPrisma.zernioConnection.findUnique.mockResolvedValue({
       apiKey: "encrypted_key",
     });
@@ -1225,6 +1225,9 @@ describe("Zernio worker routing", () => {
       expect(JSON.parse(fetchMock.mock.calls[1][1].body).accountId).toBe(
         "zernio_selected"
       );
+      const sentBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(sentBody.buttons[0].payload).toBe("followcheck:auto_789");
+      expect(sentBody.message).not.toBe(mockAutomation.dmMessage);
       expect(mockSendPrivateReply).not.toHaveBeenCalled();
       expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
       expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
@@ -1453,6 +1456,21 @@ describe("durable Zernio postback delivery", () => {
 describe("DM Worker — follow-gate re-check", () => {
   const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
 
+  it.each([false, null])("keeps the reply locked and sends the configured reminder for follow status %s", async (follows) => {
+    mockPrisma.automation.findFirst.mockResolvedValue({ ...gated, followReminderMessage: "Follow first, then try again" });
+    mockGetUserFollowStatus.mockResolvedValue(follows);
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456",
+      userId: "commenter_999",
+      payload: "followcheck:auto_789",
+      followRecheckAttempt: 2,
+    }));
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      expect.any(String), "ig_456", "commenter_999", "Follow first, then try again", "i'm following", "followcheck:auto_789",
+    );
+  });
+
   it("re-checks a first false follow later instead of rejecting the tap", async () => {
     mockPrisma.automation.findFirst.mockResolvedValue(gated);
     mockGetUserFollowStatus.mockResolvedValue(false);
@@ -1476,7 +1494,7 @@ describe("DM Worker — follow-gate re-check", () => {
   });
 
   it("prompts and records the rejection when the last re-check still finds no follow", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockPrisma.automation.findFirst.mockResolvedValue({ ...gated, followReminderMessage: "Still not following, {username}!" });
     mockGetUserFollowStatus.mockResolvedValue(false);
 
     await getProcessor()(
@@ -1490,6 +1508,12 @@ describe("DM Worker — follow-gate re-check", () => {
     );
 
     expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      expect.any(String), "ig_456", "commenter_999", "Still not following, commenter_user!", "i'm following", "followcheck:auto_789",
+    );
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ status: "SENT", commentText: "(follow confirmation)" }),
+    }));
     expect(mockPrisma.operationalEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

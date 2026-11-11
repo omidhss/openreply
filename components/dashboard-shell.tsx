@@ -22,7 +22,7 @@ export default function DashboardShell({
   return (
     // h-dvh, not h-screen: on mobile browsers the URL bar eats into 100vh, which
     // would push the composer and pagination controls below the fold.
-    <div className="flex h-dvh overflow-hidden bg-background">
+    <div className="flex h-dvh overflow-hidden bg-background text-foreground">
       <Sidebar
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}

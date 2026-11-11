@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { QueueEvents, type Worker } from "bullmq";
+import { QueueEvents, type Worker, type Job } from "bullmq";
 import { NextRequest } from "next/server";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -18,11 +18,12 @@ vi.mock("@/lib/auth", () => ({ getCurrentWorkspaceId: async () => state.workspac
 
 import { PATCH, POST as createCampaign } from "@/app/api/automations/route";
 import { GET as listStories } from "@/app/api/instagram/stories/route";
+import { GET as listLogs } from "@/app/api/logs/route";
 import { POST as webhook } from "@/app/api/zernio/webhook/[workspaceId]/route";
 import { pauseExpiredCampaigns } from "@/lib/campaigns/schedule";
 import { formatRomeInput, parseRomeInput } from "@/lib/campaigns/rome-time";
 import { encryptToken } from "@/lib/meta/oauth";
-import { getDMQueue, getRedisConnection, type DmQueueJob } from "@/lib/queue/client";
+import { getDMQueue, getRedisConnection, type DmQueueJob, type ProcessPostbackJob } from "@/lib/queue/client";
 import { createDMWorker } from "@/lib/queue/dm-worker";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
@@ -168,6 +169,10 @@ describe.skipIf(!dbUrl || !redisUrl)("Zernio automation through PostgreSQL and R
     const first = await receive("one", { metadata });
     await finish(first);
     expect(sent.map((s) => s.message).sort()).toEqual(["DM reply", "Story reply"]);
+    const logResponse = await listLogs(new NextRequest("http://localhost/api/logs?status=SENT"));
+    const logResult = await logResponse.json();
+    expect(logResult.data.pagination.total).toBe(2);
+    expect(logResult.data.logs.map((log: { automationId: string }) => log.automationId).sort()).toEqual([dm.id, story.id].sort());
     await first!.remove();
     await finish(await receive("one", { metadata }));
     expect(sent).toHaveLength(2);
@@ -190,7 +195,7 @@ describe.skipIf(!dbUrl || !redisUrl)("Zernio automation through PostgreSQL and R
   it("requires an actual verified follow on the matching person's Story prompt", async () => {
     sent.length = 0;
     const gated = await campaign({ trigger: "STORY_REPLY", matchAnyWord: true, keywords: [],
-      requireFollow: true, dmMessage: "Protected reply", followPromptMessage: "Please follow", cooldownMinutes: 10 });
+      requireFollow: true, dmMessage: "Protected reply", followPromptMessage: "Please follow", followReminderMessage: "Please follow and try again", cooldownMinutes: 10 });
     follows = null;
     await finish(await receive("gated", { text: "hello", metadata: { storyReply: true } }));
     expect(sent.map((s) => s.message)).toEqual(["Please follow"]);
@@ -202,13 +207,26 @@ describe.skipIf(!dbUrl || !redisUrl)("Zernio automation through PostgreSQL and R
     follows = false;
     await finish(await receive("tap-not-following", { text: null, metadata: tap }));
     expect(sent).toHaveLength(1);
+    // Promote the final re-check to exercise the reminder without waiting a minute.
+    const pending = (await getDMQueue().getDelayed()).filter((job) => job.name === "process-postback");
+    for (const job of pending) {
+      const postback = job as Job<ProcessPostbackJob>;
+      await postback.updateData({ ...postback.data, followRecheckAttempt: 2 });
+      await job.promote();
+      await finish(job);
+    }
+    expect(sent.slice(1).every((item) => item.message === "Please follow and try again")).toBe(true);
+    expect(sent.length).toBeGreaterThan(1);
+    expect(sent.at(-1)?.buttons?.[0]?.payload).toBe(payload);
+    const reminderCount = sent.length;
     follows = true;
     await finish(await receive("tap-verified", { text: null, metadata: tap }));
     await finish(await receive("tap-replayed", { text: null, metadata: tap }));
-    expect(sent.map((s) => s.message)).toEqual(["Please follow", "Protected reply"]);
+    expect(sent.at(-1)?.message).toBe("Protected reply");
+    expect(sent).toHaveLength(reminderCount + 1);
     expect(await receive("empty", { text: null, metadata: { storyReply: true } })).toBeUndefined();
     await finish(await receive("mention", { metadata: { isStoryMention: true, storyReply: true } }));
-    expect(sent).toHaveLength(2);
+    expect(sent).toHaveLength(reminderCount + 1);
     await state.db.automation.updateMany({ data: { isActive: false } });
   });
 

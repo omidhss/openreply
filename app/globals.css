@@ -4,35 +4,63 @@
    Plain and functional. No gradients, glass, glow, or animation. */
 
 @theme inline {
-  --color-background: #ffffff;
-  --color-foreground: #18181b;
-  --color-surface: #f7f7f8;
-  --color-surface-hover: #efeff1;
-  --color-border: #e4e4e7;
-  --color-border-hover: #d4d4d8;
-  --color-muted: #71717a;
-  --color-accent: #f97316;
-  --color-accent-hover: #ea580c;
-  --color-success: #16a34a;
-  --color-error: #dc2626;
-  --color-warning: #d97706;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-hover: var(--border-hover);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-success: var(--success);
+  --color-error: var(--error);
+  --color-warning: var(--warning);
   --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, monospace;
 }
 
-html {
+:root {
   color-scheme: light;
+  --background: #ffffff;
+  --foreground: #18181b;
+  --surface: #f7f7f8;
+  --surface-hover: #efeff1;
+  --border: #e4e4e7;
+  --border-hover: #d4d4d8;
+  --muted: #71717a;
+  --accent: #f97316;
+  --accent-hover: #ea580c;
+  --success: #16a34a;
+  --error: #dc2626;
+  --warning: #d97706;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #111113;
+  --foreground: #f4f4f5;
+  --surface: #1c1c20;
+  --surface-hover: #27272c;
+  --border: #3f3f46;
+  --border-hover: #52525b;
+  --muted: #a1a1aa;
+  --accent: #fb923c;
+  --accent-hover: #fdba74;
+  --success: #4ade80;
+  --error: #f87171;
+  --warning: #fbbf24;
 }
 
 body {
-  background: var(--color-background);
-  color: var(--color-foreground);
+  background: var(--background);
+  color: var(--foreground);
   font-family: var(--font-sans);
 }
 
 /* Focus ring — visible, for keyboard users. */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -57,16 +85,16 @@ select:focus-visible {
 
 /* Panel — flat container. Replaces .glass / .glass-strong. */
 .panel {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background: var(--surface);
+  border: 1px solid var(--border);
 }
 
 /* Kept as no-op aliases so existing markup degrades to plain surfaces
    instead of breaking. Prefer .panel in new code. */
 .glass,
 .glass-strong {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background: var(--surface);
+  border: 1px solid var(--border);
 }
 
 .gradient-mesh {
@@ -96,6 +124,7 @@ select:focus-visible {
   --color-zernio-charcoal: #2D2D2D;
 }
 .zernio-sponsor { background: var(--color-zernio-cream); color: var(--color-zernio-charcoal); border-color: var(--color-zernio-border); }
+.zernio-sponsor { --muted: #62626c; --error: #dc2626; }
 .zernio-action { background: var(--color-zernio-coral); color: white; }
 
 @font-face {

@@ -82,6 +82,7 @@ const createAutomationSchema = z
     linkButtonLabel: z.string().max(20).optional().nullable(),
     requireFollow: z.boolean().optional().default(false),
     followPromptMessage: z.string().max(1000).optional().nullable(),
+    followReminderMessage: z.string().max(1000).optional().nullable(),
     followPromptButtonLabel: z.string().max(20).optional().nullable(),
     followUpEnabled: z.boolean().optional().default(false),
     followUpMessage: z.string().max(1000).optional().nullable(),
@@ -152,6 +153,7 @@ const updateAutomationSchema = z.object({
   linkButtonLabel: z.string().max(20).optional().nullable(),
   requireFollow: z.boolean().optional(),
   followPromptMessage: z.string().max(1000).optional().nullable(),
+  followReminderMessage: z.string().max(1000).optional().nullable(),
   followPromptButtonLabel: z.string().max(20).optional().nullable(),
   followUpEnabled: z.boolean().optional(),
   followUpMessage: z.string().max(1000).optional().nullable(),
@@ -471,6 +473,7 @@ export async function POST(request: NextRequest) {
       followPromptMessage: parsed.data.requireFollow
         ? parsed.data.followPromptMessage || null
         : null,
+      followReminderMessage: parsed.data.requireFollow ? parsed.data.followReminderMessage?.trim() || null : null,
       followPromptButtonLabel: parsed.data.requireFollow
         ? parsed.data.followPromptButtonLabel || null
         : null,
@@ -647,6 +650,7 @@ export async function PATCH(request: NextRequest) {
   }
   if (automationData.requireFollow === false) {
     automationData.followPromptMessage = null;
+    automationData.followReminderMessage = null;
     automationData.followPromptButtonLabel = null;
   }
   if (automationData.followUpEnabled === false) {

@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import PostPicker from "@/components/post-picker";
+import StoryPicker from "@/components/story-picker";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
 import { readCache, writeCache } from "@/lib/client-cache";
 import { formatRomeInput } from "@/lib/campaigns/rome-time";
@@ -69,6 +70,7 @@ interface LoadedCampaign {
   linkButtonLabel: string | null;
   requireFollow: boolean;
   followPromptMessage: string | null;
+  followReminderMessage: string | null;
   followPromptButtonLabel: string | null;
   followUpEnabled: boolean;
   followUpMessage: string | null;
@@ -181,7 +183,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("none");
   const [scheduleStart, setScheduleStart] = useState("");
   const [scheduleEnd, setScheduleEnd] = useState("");
-  const [durationMinutes, setDurationMinutes] = useState("60");
+  const [durationMinutes, setDurationMinutes] = useState("1440");
 
   const [triggerScope, setTriggerScope] = useState<TriggerScope>("specific");
   const [postId, setPostId] = useState<string | null>(null);
@@ -215,6 +217,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [secondaryButtonLabel, setSecondaryButtonLabel] = useState("Open link");
   const [requireFollow, setRequireFollow] = useState(false);
   const [followPromptMessage, setFollowPromptMessage] = useState("");
+  const [followReminderMessage, setFollowReminderMessage] = useState("");
   const [followPromptButtonLabel, setFollowPromptButtonLabel] =
     useState("i'm following");
   const [followUpEnabled, setFollowUpEnabled] = useState(false);
@@ -316,7 +319,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setStoryId(c.storyId ?? "");
         setCooldownMinutes(String(c.cooldownMinutes ?? 0));
         setScheduleMode(c.durationMinutes ? "duration" : c.scheduleStartsAt || c.scheduleEndsAt ? "fixed" : "none");
-        setDurationMinutes(String(c.durationMinutes ?? 60));
+        setDurationMinutes(String(c.durationMinutes ?? 1440));
         setScheduleStart(c.scheduleStartsAt ? formatRomeInput(new Date(c.scheduleStartsAt)) : "");
         setScheduleEnd(c.scheduleEndsAt ? formatRomeInput(new Date(c.scheduleEndsAt)) : "");
         setSavedWindow({ expiresAt: c.expiresAt, scheduleStartsAt: c.scheduleStartsAt });
@@ -353,6 +356,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setSecondLinkOpen(Boolean(secondLink?.destinationUrl));
         setRequireFollow(c.requireFollow ?? false);
         setFollowPromptMessage(c.followPromptMessage ?? "");
+        setFollowReminderMessage(c.followReminderMessage ?? "");
         setFollowPromptButtonLabel(
           c.followPromptButtonLabel ?? "i'm following"
         );
@@ -516,6 +520,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       secondaryButtonLabel: secondaryButtonLabel.trim() || "Open link",
       requireFollow,
       followPromptMessage: requireFollow ? followPromptMessage.trim() : "",
+      followReminderMessage: requireFollow ? followReminderMessage.trim() : "",
       followPromptButtonLabel: requireFollow
         ? followPromptButtonLabel.trim() || "i'm following"
         : "",
@@ -813,22 +818,10 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           <Radio checked={storyScope === "all"} onSelect={() => setStoryScope("all")}>{t("All Stories")}</Radio>
           <Radio checked={storyScope === "selected"} onSelect={() => setStoryScope("selected")}>{t("A selected Story")}</Radio>
           {storyScope === "selected" && <div className="space-y-2">
-            <select className={fieldClass} aria-label={t("Active Story")} value={storyId} onChange={(e) => setStoryId(e.target.value)}>
-              <option value="">{t("Select an active Story.")}</option>
-              {storyId && !selectedStory && <option value={storyId}>{t("Previously selected Story")} ({storyId})</option>}
-              {activeStories?.stories.map((story, index) => (
-                <option key={story.id} value={story.id}>
-                  {index + 1}. {story.timestamp ? formatRomeInput(new Date(story.timestamp)).replace("T", " ") : story.id}{story.mediaType ? ` · ${story.mediaType}` : ""}
-                </option>
-              ))}
-            </select>
-            {selectedStory && (selectedStory.thumbnailUrl || selectedStory.mediaUrl) && (
-              selectedStory.mediaType?.toLowerCase() === "video" && !selectedStory.thumbnailUrl
-                ? <video src={selectedStory.mediaUrl ?? undefined} className="max-h-40 rounded-lg" controls playsInline />
-                // Instagram media URLs are temporary and vary by CDN.
-                // eslint-disable-next-line @next/next/no-img-element
-                : <img src={selectedStory.thumbnailUrl ?? selectedStory.mediaUrl ?? undefined} alt={t("Selected Story preview")} className="max-h-40 rounded-lg" />
+            {activeStories && !activeStories.failed && activeStories.stories.length > 0 && (
+              <StoryPicker stories={activeStories.stories} selectedId={storyId} onSelect={setStoryId} />
             )}
+            {storyId && activeStories && !selectedStory && <p className="text-xs text-muted">{t("Previously selected Story")} ({storyId})</p>}
             <p className="text-xs text-muted">{!activeStories ? t("Loading Stories…") : activeStories.failed ? t("Could not load active Instagram Stories.") : activeStories.stories.length === 0 ? t("No active Stories found.") : t("Only active Stories are available to select.")}</p>
             <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setStoryResults(null); setStoryRefresh((n) => n + 1); }}>{t("Refresh Stories")}</button>
           </div>}
@@ -949,8 +942,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
 
         {!isComment && <Section title={t("Per-person cooldown")}>
           <label className="block space-y-1 text-sm text-muted">
-            <span>{t("Cooldown in minutes")}</span>
-            <input type="number" min={0} max={525600} step={1} className={fieldClass} value={cooldownMinutes} onChange={(e) => setCooldownMinutes(e.target.value)} />
+            <span>{t("Cooldown in hours")}</span>
+            <input type="number" min={0} max={8760} step="any" className={fieldClass} value={cooldownMinutes === "" ? "" : Number(cooldownMinutes) / 60} onChange={(e) => setCooldownMinutes(e.target.value === "" ? "" : String(Math.round(Number(e.target.value) * 60)))} />
           </label>
           <p className="text-xs text-muted">{t("Wait this long before the same person can trigger this campaign again. Use 0 for no cooldown.")}</p>
         </Section>}
@@ -972,8 +965,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             </label>
           </>}
           {scheduleMode === "duration" && <label className="block space-y-1 text-sm text-muted">
-            <span>{t("Duration in minutes")}</span>
-            <input className={fieldClass} type="number" min={1} max={525600} step={1} value={durationMinutes} onChange={(e) => setDurationMinutes(e.target.value)} />
+            <span>{t("Duration in days")}</span>
+            <input className={fieldClass} type="number" min={1 / 1440} max={365} step="any" value={durationMinutes === "" ? "" : Number(durationMinutes) / 1440} onChange={(e) => setDurationMinutes(e.target.value === "" ? "" : String(Math.round(Number(e.target.value) * 1440)))} />
           </label>}
           {scheduleMode !== "none" && <p className="text-xs text-muted">{scheduleMode === "duration" ? t("The timer starts when you enable the campaign. After it expires, enable it again to start a new run.") : t("Times use Rome local time. The campaign pauses when it reaches its end time.")}</p>}
         </Section>
@@ -1035,9 +1028,13 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
                   maxLength={20}
                 />
-                <p className="text-xs text-muted">
-                  {t("We send the link only after they tap the button and Instagram confirms the follow. If it can't be verified, we send it anyway.")}
-                </p>
+                <label className="block space-y-1 text-sm text-muted">
+                  <span>{t("Reminder when they are not following")}</span>
+                  <textarea value={followReminderMessage} onChange={(e) => setFollowReminderMessage(e.target.value)}
+                    placeholder={t("I couldn't confirm your follow yet. Please follow this page, then tap the button again.")}
+                    maxLength={1000} rows={3} className={fieldClass} />
+                </label>
+                <p className="text-xs text-muted">{t("The reminder uses the same button. The reply stays locked until a follow is confirmed.")}</p>
               </div>
             )}
           </div>

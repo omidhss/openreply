@@ -26,7 +26,7 @@ export async function getCampaign(context: ServiceContext, id: string) {
     select: {
       ...summarySelect, wholeWordMatch: true, dmTriggerEnabled: true,
       openingDmEnabled: true, openingDmMessage: true, openingDmButtonLabel: true,
-      linkButtonLabel: true, requireFollow: true, followPromptMessage: true,
+      linkButtonLabel: true, requireFollow: true, followPromptMessage: true, followReminderMessage: true,
       followPromptButtonLabel: true, followUpEnabled: true, followUpMessage: true,
       followUpDelayMinutes: true, publicReplyEnabled: true, publicReplyMessage: true,
       publicReplyMessages: true,
